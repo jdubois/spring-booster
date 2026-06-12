@@ -35,8 +35,11 @@ executor down after refresh.
 * Parallelizing bean *post-processing*, lifecycle callbacks, or the
   `SmartInitializingSingleton` phase (these remain on the main thread as the
   framework dictates).
-* Resolving by-type / annotation autowiring statically (see §5 — this is the key
-  known limitation).
+* Perfectly reconstructing the framework's full autowiring model. Spring Booster
+  now resolves by-type / `@Autowired` / `ObjectProvider` edges statically (see §4
+  and §5), but lookups performed dynamically from inside bean code (e.g. a captured
+  `ObjectProvider` resolved later, or a `BeanFactory.getBean(...)` call) remain
+  invisible; the connectivity-safe selection in §5 is what keeps those cases safe.
 
 ### 1.3 Design goals (in priority order)
 
@@ -94,8 +97,9 @@ All code lives in a single package: `io.github.jdubois.springbooster`.
 | `ParallelBootstrapRegistrar` | `ImportBeanDefinitionRegistrar` activated by the annotation. Translates annotation attributes into `ParallelBootstrapSettings` and registers the post-processor as an infrastructure bean (idempotently). |
 | `ParallelBootstrapApplicationContextInitializer` | `ApplicationContextInitializer` entry point for programmatic / Spring Boot (`spring.factories`) registration, with no need for the annotation. |
 | `ParallelBootstrapSettings` | Immutable configuration (pool size, thread-name prefix, kill-switch, candidate `Predicate`). Built via a fluent `Builder`. Defines the per-bean opt-out attribute. |
-| `BeanDependencyGraph` | Pure in-memory, conservative dependency graph of singleton bean definitions. Provides topological layering (Kahn) and cycle detection (Tarjan). Never triggers bean creation. |
-| `ParallelBootstrapBeanFactoryPostProcessor` | The engine. Plans candidates, marks them for background init, installs the bounded executor, and registers a listener to shut it down after refresh. |
+| `BeanDependencyGraph` | Pure in-memory dependency graph of the bean definitions. Models both declared references **and** by-type autowiring edges (via `AutowiredEdgeResolver`), classifying each edge as *forced* or *sync*. Provides topological layering (Kahn) and cycle detection (Tarjan). Never triggers bean creation. |
+| `AutowiredEdgeResolver` | Reflectively resolves the by-type / `@Autowired` / `ObjectProvider` dependency edges that the declarations do not reveal (`@Bean` method params, autowired constructors, `@Autowired` fields/methods), unwrapping `ObjectProvider`/`ObjectFactory`/`Provider`/`Optional`/collections/maps/arrays. Resolves candidate names with eager init disabled, so it never instantiates a bean. |
+| `ParallelBootstrapBeanFactoryPostProcessor` | The engine. Plans candidates (connectivity-safe selection), marks them for background init, installs the bounded executor, and registers a listener to shut it down after refresh. |
 | `package-info.java` | `@NullMarked` package declaration and overview. |
 
 ### 3.1 Control flow
@@ -131,15 +135,19 @@ the final, complete set of bean definitions.
 ## 4. Candidate selection — the heart of the design
 
 `ParallelBootstrapBeanFactoryPostProcessor.planCandidates(...)` selects beans that
-are safe to instantiate in the background. A bean is a candidate **only if all** of
-the following hold:
+are safe to instantiate in the background. Selection has two stages: a per-bean
+**structural** filter, followed by a graph-wide **connectivity-safe** pass.
+
+A bean is **structurally eligible only if all** of the following hold:
 
 1. It is a **non-abstract, non-lazy singleton** bean definition.
 2. It is **not part of a dependency cycle** (cycles require the single-threaded
-   early-singleton-reference handshake; detected via Tarjan's SCC algorithm).
-3. It is **not a shared factory bean** (a bean that acts as the factory for at
-   least one other bean, e.g. a `@Configuration` class hosting `@Bean` methods).
-   Such beans must be available synchronously on the main thread.
+   early-singleton-reference handshake; detected via Tarjan's SCC algorithm over the
+   full edge set, including by-type edges).
+3. It is **neither a shared factory bean nor a `depends-on` target**. These are
+   *forced-mainline* beans: the framework eagerly instantiates them on the main
+   thread before backgrounding a dependent (a `@Configuration` class hosting `@Bean`
+   methods is the canonical factory bean), so they must run on the main thread.
 4. Its definition is an `AbstractBeanDefinition` (required to call
    `setBackgroundInit`).
 5. It has **not opted out** via `ParallelBootstrapSettings.OPT_OUT_ATTRIBUTE`.
@@ -149,40 +157,55 @@ the following hold:
 7. It passes the user-supplied **`candidateFilter`** predicate (default: accept
    all).
 
+Every bean that is *not* structurally eligible is treated as a **main-thread**
+(mainline) bean. The connectivity-safe pass (§5) then removes any otherwise-eligible
+bean that is joined to a main-thread bean by a *sync* edge.
+
 ### 4.1 The dependency graph
 
-`BeanDependencyGraph` extracts edges **statically** from each merged
-`BeanDefinition`:
+`BeanDependencyGraph` extracts edges from each merged `BeanDefinition` and from its
+injection points, then classifies every edge as **forced** or **sync**:
 
-* `depends-on` declarations,
-* the factory-bean reference,
-* constructor-argument `BeanReference`s (including nested in collections/maps/arrays),
-* property `BeanReference`s (same nesting rules).
+* **Forced** (target eagerly created on the main thread before the source is
+  backgrounded, so it never crosses the boundary unsafely):
+  * `depends-on` declarations,
+  * the factory-bean reference.
+* **Sync** (resolved on the source bean's *own* thread, so it constrains which beans
+  may share the background set):
+  * constructor-argument `BeanReference`s (including nested in collections/maps/arrays),
+  * property `BeanReference`s (same nesting rules),
+  * **by-type / `@Autowired` / `ObjectProvider` autowiring edges** discovered by
+    `AutowiredEdgeResolver` — `@Bean` factory-method parameters, autowired
+    constructor parameters, and `@Autowired` fields/methods, unwrapping
+    `ObjectProvider` / `ObjectFactory` / `Provider` / `Optional` / collections / maps
+    / arrays to the target element type.
 
-Edges pointing outside the analysed node set are dropped; self-references are kept
-so cycle detection can flag them. The graph exposes:
+Edges pointing outside the analysed node set are dropped; declared self-references
+are kept so cycle detection can flag them (autowiring self-matches are excluded, as
+the framework excludes a bean from its own by-type collections). The graph exposes:
 
+* `getSyncDependencies(name)` — the sync out-edges used by the connectivity-safe pass,
 * `computeLayers()` — Kahn topological layering (each layer depends only on earlier
   layers and can run concurrently),
 * `beansInCycles()` — Tarjan SCCs of size > 1, plus self-references.
 
-It performs **pure analysis and never instantiates a bean.**
+Candidate names for a by-type injection point are resolved through
+`getBeanNamesForType(type, includeNonSingletons=true, allowEagerInit=false)`, so the
+graph still performs **pure analysis and never instantiates a bean.**
 
 ---
 
-## 5. Known limitation (critical) — by-type / `ObjectProvider` autowiring
+## 5. By-type / `ObjectProvider` autowiring — modelled, and made safe
 
-**The static graph only models *explicit* references. It is blind to by-type
-autowiring, `@Autowired` injection points, and `ObjectProvider` lookups.**
-
-This is a fundamental consequence of analysing bean *definitions* rather than
-resolving the full autowiring model, and it has a concrete, verified failure mode:
+Earlier versions of Spring Booster modelled only *explicit* references and were
+blind to by-type autowiring, `@Autowired` injection points, and `ObjectProvider`
+lookups. That gap produced a concrete, verified failure:
 
 > In a Spring Boot application, `WebMvcAutoConfiguration$WebMvcAutoConfigurationAdapter`
 > pulls `resourceHandlerRegistrationCustomizer` **by type via `ObjectProvider`** on
-> the main thread. Because no explicit `BeanReference` exists, the graph treats that
-> customizer as an independent leaf, marks it for background initialization, and the
-> framework then throws:
+> the main thread. Because no explicit `BeanReference` existed, the graph treated that
+> customizer as an independent leaf, marked it for background initialization, and the
+> framework then threw:
 >
 > ```
 > BeanCurrentlyInCreationException: Bean marked for background initialization but
@@ -192,36 +215,65 @@ resolving the full autowiring model, and it has a concrete, verified failure mod
 >
 > This was reproduced end-to-end with Spring Petclinic on Spring Boot 4.0.3.
 
-### 5.1 Consequences and current mitigation
+Spring Booster now closes this gap with two cooperating mechanisms.
 
-* With the **default permissive `candidateFilter` (accept-all)**, Spring Booster is
-  **not safe to enable wholesale on a typical Spring Boot application.**
-* The current mitigation is operational, not algorithmic: restrict candidates with
-  a `candidateFilter` (e.g. only your own `com.example.*` beans), or opt specific
-  beans out via `OPT_OUT_ATTRIBUTE`.
+### 5.1 All edges are visible
 
-### 5.2 Directions for a real fix (open design space for future agents)
+`AutowiredEdgeResolver` (see §4.1) makes the previously-invisible by-type
+relationships first-class **sync** edges in `BeanDependencyGraph`. The graph is built
+over **every** registered bean definition, so all dependency relationships between
+beans are represented — the customizer above now carries an incoming edge from the
+adapter that requires it.
 
-Ordered roughly from least to most invasive:
+### 5.2 Connectivity-safe selection (why it is correct)
 
-1. **Safe-by-default candidate selection.** Default to *excluding* beans unless they
-   are demonstrably safe — e.g. only application beans, never auto-configuration /
-   framework-package beans; never beans that are `autowireCandidate` for a type that
-   is injected via `ObjectProvider`.
-2. **Model autowiring edges.** Inspect `@Autowired` constructors/fields/methods and
-   `ObjectProvider`/`Provider` parameters to add by-type edges to the graph
-   (resolving candidate bean names by type through the factory). This directly
-   closes the gap that caused the Petclinic failure.
-3. **Add `@Lazy` / `ObjectProvider` guidance or auto-rewriting** for mainline
-   dependents of background beans, mirroring the framework's own recommendation in
-   the exception message.
-4. **Whole-application benchmark harness** to quantify the startup win and guard
-   against regressions on representative apps.
+Seeing the edges is necessary but not sufficient; selection must also use them. The
+framework contract (from `DefaultListableBeanFactory`) is:
 
-A reproduction harness for the failure already exists in the sibling
-`spring-context-bootstrap` work: a script that downloads Petclinic, wires in the
-module, and asserts startup. Porting an equivalent integration test here would be a
-high-value next step.
+* a **background** bean requested while the pre-instantiation thread is **MAIN**
+  throws (the failure above), and
+* a **mainline** bean requested from a **BACKGROUND** thread throws as well;
+* only a background bean's `depends-on` and factory-bean references are
+  force-instantiated on the main thread first (the *forced* edges).
+
+From this, a background set `S` is safe **iff**:
+
+1. every *forced*-edge target is mainline (handled structurally — factory beans and
+   `depends-on` targets are never eligible), and
+2. no *sync* edge crosses the boundary of `S` in **either** direction.
+
+`planCandidates` therefore seeds the mainline set with every structurally-ineligible
+bean and then **propagates mainline membership across sync edges to a fixpoint**: any
+eligible bean joined to a mainline bean by a sync edge (incoming *or* outgoing) is
+reclassified as mainline. Whatever remains eligible forms a set whose sync edges are
+fully internal — safe to background. In the Petclinic case the adapter is a
+factory-bean (mainline), so the customizer is pulled mainline and is never
+backgrounded.
+
+### 5.3 Consequences
+
+* Spring Booster is now **safe to enable with the default accept-all
+  `candidateFilter`**: it degrades to backgrounding only beans whose sync-dependency
+  component is entirely backgroundable, and falls back to sequential bootstrap when in
+  doubt (design goal #1).
+* The trade-off is conservatism: on a large application where most beans are
+  sync-connected to framework/auto-configuration beans, relatively few beans may be
+  parallelized by default. `candidateFilter` (e.g. restricting to your own
+  `com.example.*` beans) and `OPT_OUT_ATTRIBUTE` remain the levers to widen or narrow
+  the set deliberately.
+* **Remaining blind spot:** dependencies that are *not* expressed at a
+  definition/injection-point level — e.g. a captured `ObjectProvider` resolved later
+  from inside bean code, or a direct `beanFactory.getBean(...)` call — are still
+  invisible. These are handled by the same safety net: such a lookup target is only
+  unsafe if it was backgrounded, and a bean is only backgrounded when its *visible*
+  sync component is isolated, which already excludes the typical offenders.
+
+### 5.4 Possible future work
+
+* **Whole-application benchmark harness** to quantify the startup win and guard
+  against regressions on representative apps (e.g. an automated Petclinic run).
+* **`@Lazy` / `ObjectProvider` guidance or auto-rewriting** for mainline dependents
+  of background beans, which could let more beans be parallelized safely.
 
 ---
 
@@ -254,10 +306,14 @@ high-value next step.
 * **Tests:** JUnit Jupiter + AssertJ (versions from the Boot BOM). Maven Surefire
   provides the JUnit Platform launcher automatically, so no extra launcher
   dependency is needed.
-* **Test coverage today:** `BeanDependencyGraphTests` (graph/layers/cycles),
-  `ParallelBootstrapBeanFactoryPostProcessorTests` (candidate planning, infra
-  exclusion, opt-out), and `ParallelBootstrapIntegrationTests` (real context refresh,
-  bean wiring, bootstrap-thread usage, executor shutdown, programmatic initializer).
+* **Test coverage today:** `BeanDependencyGraphTests` (graph/layers/cycles plus
+  by-type, `@Autowired`, `ObjectProvider`, collection edges and the forced-vs-sync
+  distinction), `ParallelBootstrapBeanFactoryPostProcessorTests` (candidate planning,
+  infra exclusion, opt-out, and connectivity-safe exclusion of beans pulled by type
+  from a main-thread bean), and `ParallelBootstrapIntegrationTests` (real context
+  refresh, bean wiring, bootstrap-thread usage, executor shutdown, programmatic
+  initializer, and an end-to-end reproduction proving a main-thread by-type consumer
+  no longer triggers `BeanCurrentlyInCreationException`).
 
 ### 7.1 Conventions
 

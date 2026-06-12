@@ -85,6 +85,27 @@ class ParallelBootstrapIntegrationTests {
         }
     }
 
+    @Test
+    void mainThreadByTypeConsumerDoesNotTriggerBackgroundCreationException() {
+        RecordingConfig.creationThreads.clear();
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            context.register(ByTypeConsumerConfig.class);
+            // Force "consumer" onto the main thread; it injects "leaf" by type. Before
+            // by-type edges were modelled, "leaf" was backgrounded and this refresh
+            // failed with BeanCurrentlyInCreationException. "independent" has no
+            // dependents and is still parallelized.
+            ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                    .poolSize(4)
+                    .candidateFilter(name -> name.equals("leaf") || name.equals("independent"))
+                    .build();
+            context.addBeanFactoryPostProcessor(new ParallelBootstrapBeanFactoryPostProcessor(settings));
+            context.refresh();
+
+            assertThat(context.getBean(Leaf.class)).isNotNull();
+            assertThat(RecordingConfig.creationThreads).anyMatch(name -> name.startsWith("parallel-bootstrap-"));
+        }
+    }
+
     @Configuration(proxyBeanMethods = false)
     @EnableParallelBootstrap
     static class EnabledConfig {
@@ -165,6 +186,36 @@ class ParallelBootstrapIntegrationTests {
             RecordingConfig.creationThreads.add(Thread.currentThread().getName());
             return new ServiceA();
         }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class ByTypeConsumerConfig {
+
+        // Declared before "leaf" on purpose: the main thread instantiates "consumer"
+        // and resolves "leaf" by type before "leaf" has been submitted for background
+        // creation, which is exactly the situation that used to throw
+        // BeanCurrentlyInCreationException when "leaf" was wrongly backgrounded.
+        @Bean
+        ByTypeConsumer consumer(Leaf leaf) {
+            return new ByTypeConsumer(leaf);
+        }
+
+        @Bean
+        Leaf leaf() {
+            return new Leaf();
+        }
+
+        @Bean
+        RecordingBean independent() {
+            return new RecordingBean(RecordingConfig.creationThreads);
+        }
+    }
+
+    static class Leaf {}
+
+    static class ByTypeConsumer {
+
+        ByTypeConsumer(Leaf leaf) {}
     }
 
     static class ServiceA {}

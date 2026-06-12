@@ -16,9 +16,15 @@
 
 package io.github.jdubois.springbooster;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Deque;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -153,23 +159,48 @@ public class ParallelBootstrapBeanFactoryPostProcessor
     /**
      * Determine the ordered list of bean names that are safe to instantiate in the
      * background. Exposed with package visibility for testing.
+     *
+     * <p>Selection is <em>connectivity-safe</em>: a bean is only retained if no
+     * <em>sync</em> dependency edge (constructor/property reference or by-type /
+     * {@code @Autowired} / {@code ObjectProvider} autowiring) connects it &mdash; in
+     * either direction &mdash; to a bean that is instantiated on the main thread.
+     * This prevents the {@code BeanCurrentlyInCreationException} that occurs when a
+     * main-thread bean pulls a background bean by type (and the symmetric case of a
+     * background bean pulling a main-thread bean).
      */
     List<String> planCandidates(ConfigurableListableBeanFactory beanFactory) {
+        List<String> allNames = List.of(beanFactory.getBeanDefinitionNames());
         List<String> singletons = new ArrayList<>();
-        for (String beanName : beanFactory.getBeanDefinitionNames()) {
+        for (String beanName : allNames) {
             BeanDefinition bd = safeGetBeanDefinition(beanFactory, beanName);
             if (bd != null && !bd.isAbstract() && bd.isSingleton() && !bd.isLazyInit()) {
                 singletons.add(beanName);
             }
         }
 
-        BeanDependencyGraph graph = BeanDependencyGraph.build(beanFactory, singletons);
+        // Build the graph over every registered bean definition so that all
+        // dependency relationships (including by-type autowiring) are visible.
+        BeanDependencyGraph graph = BeanDependencyGraph.build(beanFactory, allNames);
         Set<String> cyclic = graph.beansInCycles();
-        Set<String> factoryProviders = collectFactoryBeanProviders(beanFactory);
+        Set<String> forcedMainline = collectForcedMainlineBeans(beanFactory);
+
+        // Beans that are structurally eligible for background initialization.
+        Set<String> eligible = new LinkedHashSet<>();
+        for (String beanName : singletons) {
+            if (isSafeCandidate(beanFactory, beanName, cyclic, forcedMainline)) {
+                eligible.add(beanName);
+            }
+        }
+
+        // Every node that is not eligible runs on the main thread; propagate that
+        // constraint across sync edges so no sync edge crosses the boundary.
+        Set<String> mainline = new LinkedHashSet<>(graph.getNodes());
+        mainline.removeAll(eligible);
+        propagateMainline(graph, eligible, mainline);
 
         List<String> candidates = new ArrayList<>();
         for (String beanName : singletons) {
-            if (isSafeCandidate(beanFactory, beanName, cyclic, factoryProviders)) {
+            if (eligible.contains(beanName)) {
                 candidates.add(beanName);
             }
         }
@@ -177,35 +208,72 @@ public class ParallelBootstrapBeanFactoryPostProcessor
     }
 
     /**
-     * Collect the names of beans that act as the factory bean for at least one other
-     * bean (for example a {@code @Configuration} class hosting {@code @Bean} methods).
-     * Such beans must be available synchronously and are therefore treated as
-     * synchronization points rather than background candidates.
+     * Iteratively reclassify as main-thread any eligible bean that is joined by a sync
+     * edge (in either direction) to a bean already known to run on the main thread,
+     * until a fixpoint is reached.
      */
-    private static Set<String> collectFactoryBeanProviders(ConfigurableListableBeanFactory beanFactory) {
-        Set<String> providers = new HashSet<>();
-        for (String beanName : beanFactory.getBeanDefinitionNames()) {
-            BeanDefinition bd = safeGetMergedBeanDefinition(beanFactory, beanName);
-            if (bd != null && bd.getFactoryBeanName() != null) {
-                providers.add(bd.getFactoryBeanName());
+    private static void propagateMainline(BeanDependencyGraph graph, Set<String> eligible, Set<String> mainline) {
+        Map<String, Set<String>> dependents = new HashMap<>();
+        for (String node : graph.getNodes()) {
+            for (String dependency : graph.getSyncDependencies(node)) {
+                dependents
+                        .computeIfAbsent(dependency, key -> new LinkedHashSet<>())
+                        .add(node);
             }
         }
-        return providers;
+        Deque<String> worklist = new ArrayDeque<>(mainline);
+        while (!worklist.isEmpty()) {
+            String current = worklist.poll();
+            Set<String> neighbors = new LinkedHashSet<>(graph.getSyncDependencies(current));
+            neighbors.addAll(dependents.getOrDefault(current, Collections.emptySet()));
+            for (String neighbor : neighbors) {
+                if (eligible.remove(neighbor)) {
+                    mainline.add(neighbor);
+                    worklist.add(neighbor);
+                }
+            }
+        }
+    }
+
+    /**
+     * Collect the names of beans that the framework force-instantiates on the main
+     * thread before backgrounding a dependent: the factory bean of any bean (for
+     * example a {@code @Configuration} class hosting {@code @Bean} methods) and the
+     * target of any {@code depends-on} declaration. Such beans cannot themselves be
+     * background candidates.
+     */
+    private static Set<String> collectForcedMainlineBeans(ConfigurableListableBeanFactory beanFactory) {
+        Set<String> forced = new HashSet<>();
+        for (String beanName : beanFactory.getBeanDefinitionNames()) {
+            BeanDefinition bd = safeGetMergedBeanDefinition(beanFactory, beanName);
+            if (bd == null) {
+                continue;
+            }
+            if (bd.getFactoryBeanName() != null) {
+                forced.add(bd.getFactoryBeanName());
+            }
+            String[] dependsOn = bd.getDependsOn();
+            if (dependsOn != null) {
+                Collections.addAll(forced, dependsOn);
+            }
+        }
+        return forced;
     }
 
     private boolean isSafeCandidate(
             ConfigurableListableBeanFactory beanFactory,
             String beanName,
             Set<String> cyclic,
-            Set<String> factoryProviders) {
+            Set<String> forcedMainline) {
 
         if (cyclic.contains(beanName)) {
             // Beans in a cycle must be created on a single thread to preserve the
             // early-singleton-reference handshake.
             return false;
         }
-        if (factoryProviders.contains(beanName)) {
-            // A shared factory bean must be created synchronously on the main thread.
+        if (forcedMainline.contains(beanName)) {
+            // A shared factory bean or depends-on target must be created synchronously
+            // on the main thread.
             return false;
         }
         BeanDefinition bd = safeGetBeanDefinition(beanFactory, beanName);

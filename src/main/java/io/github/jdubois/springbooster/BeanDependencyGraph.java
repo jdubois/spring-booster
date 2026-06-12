@@ -39,13 +39,23 @@ import org.springframework.beans.factory.config.ConstructorArgumentValues.ValueH
  * An approximate, conservative dependency graph of the singleton bean definitions
  * registered in a bean factory.
  *
- * <p>Edges are extracted statically from each merged {@link BeanDefinition} using
- * the introspectable references only: {@code depends-on} declarations, the factory
- * bean reference, constructor-argument {@link BeanReference bean references}, and
- * property {@link BeanReference bean references} (including those nested inside
- * managed collections and maps). By-type autowiring edges that cannot be resolved
- * statically are intentionally not represented here; callers must treat such beans
- * conservatively.
+ * <p>Edges are extracted from each merged {@link BeanDefinition} using both the
+ * declared references &mdash; {@code depends-on} declarations, the factory bean
+ * reference, constructor-argument {@link BeanReference bean references}, and property
+ * {@link BeanReference bean references} (including those nested inside managed
+ * collections and maps) &mdash; and the <em>by-type</em> autowiring edges discovered
+ * by {@link AutowiredEdgeResolver} ({@code @Bean} factory-method parameters, autowired
+ * constructor parameters, and {@code @Autowired} / {@code ObjectProvider} injection
+ * points). Together these make every dependency relationship between the analysed
+ * beans visible to the planner.
+ *
+ * <p>Edges are additionally classified as <em>forced</em> or <em>sync</em>. A forced
+ * edge ({@code depends-on} or the factory-bean reference) is one whose target the
+ * framework eagerly instantiates on the main thread before backgrounding the source,
+ * so it never crosses the background/mainline boundary unsafely. A sync edge (a
+ * constructor/property reference or a by-type autowiring edge) is resolved on the
+ * source bean's own thread, so it constrains which beans may share the background
+ * set. {@link #getSyncDependencies(String)} exposes the latter for the planner.
  *
  * <p>The graph exposes two derived views used by the parallel bootstrap planner:
  * <ul>
@@ -71,15 +81,24 @@ final class BeanDependencyGraph {
     /** Adjacency: bean name -> names of the beans it directly depends on. */
     private final Map<String, Set<String>> dependencies;
 
-    private BeanDependencyGraph(Set<String> nodes, Map<String, Set<String>> dependencies) {
+    /**
+     * Adjacency restricted to <em>sync</em> edges (constructor/property references and
+     * by-type autowiring), i.e. the dependencies resolved on the source bean's own
+     * thread rather than force-instantiated on the main thread.
+     */
+    private final Map<String, Set<String>> syncDependencies;
+
+    private BeanDependencyGraph(
+            Set<String> nodes, Map<String, Set<String>> dependencies, Map<String, Set<String>> syncDependencies) {
         this.nodes = nodes;
         this.dependencies = dependencies;
+        this.syncDependencies = syncDependencies;
     }
 
     /**
      * Build a dependency graph from the given bean factory, restricted to the
-     * supplied set of bean names (typically the non-abstract singletons). Edges that
-     * point to beans outside the supplied set are ignored.
+     * supplied set of bean names (typically all registered bean definitions). Edges
+     * that point to beans outside the supplied set are ignored.
      * @param beanFactory the bean factory to introspect
      * @param beanNames the bean names to include as graph nodes
      * @return the resulting dependency graph
@@ -87,18 +106,25 @@ final class BeanDependencyGraph {
     static BeanDependencyGraph build(ConfigurableListableBeanFactory beanFactory, Collection<String> beanNames) {
         Set<String> nodes = new LinkedHashSet<>(beanNames);
         Map<String, Set<String>> dependencies = new HashMap<>(nodes.size());
+        Map<String, Set<String>> syncDependencies = new HashMap<>(nodes.size());
         for (String beanName : nodes) {
             Set<String> edges = new LinkedHashSet<>();
+            Set<String> syncEdges = new LinkedHashSet<>();
             BeanDefinition mbd = safeGetMergedBeanDefinition(beanFactory, beanName);
             if (mbd != null) {
-                collectEdges(mbd, edges);
+                collectEdges(mbd, edges, syncEdges);
+                // By-type / @Autowired / ObjectProvider edges the declarations do not reveal.
+                AutowiredEdgeResolver.collect(beanFactory, beanName, mbd, syncEdges);
             }
+            edges.addAll(syncEdges);
             // Keep only edges that point to known nodes; self-references are retained
             // so that cycle detection can flag them.
             edges.retainAll(nodes);
+            syncEdges.retainAll(nodes);
             dependencies.put(beanName, edges);
+            syncDependencies.put(beanName, syncEdges);
         }
-        return new BeanDependencyGraph(nodes, dependencies);
+        return new BeanDependencyGraph(nodes, dependencies, syncDependencies);
     }
 
     private static @Nullable BeanDefinition safeGetMergedBeanDefinition(
@@ -110,24 +136,26 @@ final class BeanDependencyGraph {
         }
     }
 
-    private static void collectEdges(BeanDefinition mbd, Set<String> edges) {
+    private static void collectEdges(BeanDefinition mbd, Set<String> edges, Set<String> syncEdges) {
         String[] dependsOn = mbd.getDependsOn();
         if (dependsOn != null) {
+            // depends-on targets are force-instantiated on the main thread: forced edges.
             Collections.addAll(edges, dependsOn);
         }
         String factoryBeanName = mbd.getFactoryBeanName();
         if (factoryBeanName != null) {
+            // The factory bean is force-instantiated on the main thread: forced edge.
             edges.add(factoryBeanName);
         }
         for (ValueHolder holder :
                 mbd.getConstructorArgumentValues().getIndexedArgumentValues().values()) {
-            extractReferences(holder.getValue(), edges);
+            extractReferences(holder.getValue(), syncEdges);
         }
         for (ValueHolder holder : mbd.getConstructorArgumentValues().getGenericArgumentValues()) {
-            extractReferences(holder.getValue(), edges);
+            extractReferences(holder.getValue(), syncEdges);
         }
         for (PropertyValue pv : mbd.getPropertyValues().getPropertyValueList()) {
-            extractReferences(pv.getValue(), edges);
+            extractReferences(pv.getValue(), syncEdges);
         }
     }
 
@@ -162,6 +190,17 @@ final class BeanDependencyGraph {
      */
     Set<String> getDependencies(String beanName) {
         return Collections.unmodifiableSet(this.dependencies.getOrDefault(beanName, Collections.emptySet()));
+    }
+
+    /**
+     * The direct <em>sync</em> dependencies (outgoing edges resolved on the bean's own
+     * thread, i.e. constructor/property references and by-type autowiring) of the
+     * given bean. These are the edges that must not cross the background/mainline
+     * boundary, as opposed to the {@code depends-on} / factory-bean edges that the
+     * framework force-instantiates on the main thread.
+     */
+    Set<String> getSyncDependencies(String beanName) {
+        return Collections.unmodifiableSet(this.syncDependencies.getOrDefault(beanName, Collections.emptySet()));
     }
 
     /**

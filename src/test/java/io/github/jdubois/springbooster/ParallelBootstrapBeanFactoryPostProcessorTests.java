@@ -119,6 +119,46 @@ class ParallelBootstrapBeanFactoryPostProcessorTests {
     }
 
     @Test
+    void excludesBeanPulledByTypeFromMainThreadBean() {
+        this.beanFactory.registerBeanDefinition("leaf", new RootBeanDefinition(Leaf.class));
+        this.beanFactory.registerBeanDefinition("consumer", new RootBeanDefinition(ConstructorConsumer.class));
+        // The consumer is forced onto the main thread by the filter; it pulls "leaf"
+        // by type, so "leaf" must not be backgrounded even though it passes the filter.
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                .candidateFilter(name -> name.equals("leaf"))
+                .build();
+
+        List<String> candidates =
+                new ParallelBootstrapBeanFactoryPostProcessor(settings).planCandidates(this.beanFactory);
+
+        assertThat(candidates).isEmpty();
+    }
+
+    @Test
+    void excludesBeanPulledViaObjectProviderFromMainThreadBean() {
+        this.beanFactory.registerBeanDefinition("leaf", new RootBeanDefinition(Leaf.class));
+        this.beanFactory.registerBeanDefinition("consumer", new RootBeanDefinition(ProviderConsumer.class));
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                .candidateFilter(name -> name.equals("leaf"))
+                .build();
+
+        List<String> candidates =
+                new ParallelBootstrapBeanFactoryPostProcessor(settings).planCandidates(this.beanFactory);
+
+        assertThat(candidates).isEmpty();
+    }
+
+    @Test
+    void backgroundsByTypeConnectedBeansWhenAllAreEligible() {
+        this.beanFactory.registerBeanDefinition("leaf", new RootBeanDefinition(Leaf.class));
+        this.beanFactory.registerBeanDefinition("consumer", new RootBeanDefinition(ConstructorConsumer.class));
+
+        List<String> candidates = new ParallelBootstrapBeanFactoryPostProcessor().planCandidates(this.beanFactory);
+
+        assertThat(candidates).containsExactlyInAnyOrder("leaf", "consumer");
+    }
+
+    @Test
     void killSwitchDisablesPlanningAndExecutor() {
         registerSingleton("a");
         ParallelBootstrapSettings settings =
@@ -157,4 +197,16 @@ class ParallelBootstrapBeanFactoryPostProcessorTests {
     }
 
     static class SampleBeanPostProcessor implements BeanPostProcessor {}
+
+    static class Leaf {}
+
+    static class ConstructorConsumer {
+        ConstructorConsumer(Leaf leaf) {}
+    }
+
+    static class ProviderConsumer {
+
+        @org.springframework.beans.factory.annotation.Autowired
+        org.springframework.beans.factory.ObjectProvider<Leaf> leaf;
+    }
 }

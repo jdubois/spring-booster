@@ -14,25 +14,30 @@ The feature is **strictly opt-in**: nothing is parallelized unless you enable it
 explicitly, and it always degrades gracefully to the normal sequential bootstrap
 if anything goes wrong.
 
-> ⚠️ **Important — read the [SPECIFICATION.md](SPECIFICATION.md) before enabling
-> this in a Spring Boot application.** The dependency analysis only sees
-> *explicit* bean references and cannot see by-type / `ObjectProvider`
-> autowiring. With the permissive default candidate selection this can mark beans
-> for background initialization that Spring Boot auto-configuration then requests
-> on the main thread, causing a `BeanCurrentlyInCreationException` at startup. Use
-> a `candidateFilter` to restrict parallelization to beans you know are safe.
+> ℹ️ **Safe by default.** The dependency analysis now models **by-type /
+> `@Autowired` / `ObjectProvider` autowiring** in addition to explicit references,
+> and candidate selection is **connectivity-safe**: a bean is parallelized only when
+> no dependency edge connects it — in either direction — to a bean that runs on the
+> main thread. This prevents the `BeanCurrentlyInCreationException` that earlier
+> versions could trigger on Spring Boot auto-configuration. The trade-off is
+> conservatism — on a large app relatively few beans may be parallelized by default;
+> use a `candidateFilter` to widen the set to beans you know are safe. See
+> [SPECIFICATION.md](SPECIFICATION.md) §5 for the details.
 
 ---
 
 ## What it does
 
 * Builds an **approximate, conservative dependency graph** of the registered
-  non-lazy singleton bean definitions, using only statically introspectable
-  references (`depends-on`, factory-bean references, and constructor/property
-  `BeanReference`s).
-* Identifies **independent "leaf" beans** that are safe to create concurrently
-  (excluding beans in dependency cycles, shared factory beans, framework
-  infrastructure beans such as `BeanPostProcessor`s, and anything you opt out).
+  bean definitions, using both statically introspectable references (`depends-on`,
+  factory-bean references, and constructor/property `BeanReference`s) **and** by-type
+  / `@Autowired` / `ObjectProvider` autowiring edges (resolved without instantiating
+  any beans).
+* Identifies **independent beans** that are safe to create concurrently using
+  **connectivity-safe selection** — excluding beans in dependency cycles, shared
+  factory beans, framework infrastructure beans such as `BeanPostProcessor`s, anything
+  you opt out, and any bean connected by a dependency edge to a bean that must run on
+  the main thread.
 * Marks those beans for background initialization and installs a **bounded
   bootstrap thread pool** (sized by default at twice the available processor
   count) that the bean factory uses during `preInstantiateSingletons()`.
