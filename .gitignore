@@ -22,3 +22,6 @@ bin/
 # Java
 *.class
 *.log
+
+# Benchmark: the Petclinic checkout is recreated by benchmark/setup.sh
+benchmark/spring-petclinic/
