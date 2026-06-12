@@ -82,9 +82,12 @@ final class BeanDependencyGraph {
     private final Map<String, Set<String>> dependencies;
 
     /**
-     * Adjacency restricted to <em>sync</em> edges (constructor/property references and
-     * by-type autowiring), i.e. the dependencies resolved on the source bean's own
-     * thread rather than force-instantiated on the main thread.
+     * Adjacency restricted to <em>sync</em> / co-location edges: the dependencies
+     * resolved on the source bean's own thread (constructor/property references and
+     * by-type autowiring) plus the factory&rarr;bean co-location edges added by
+     * {@link #addFactoryColocationEdges}. These are the edges that must not cross the
+     * background/mainline boundary, as opposed to the {@code depends-on} / factory-bean
+     * edges that the framework force-instantiates on the main thread.
      */
     private final Map<String, Set<String>> syncDependencies;
 
@@ -98,12 +101,32 @@ final class BeanDependencyGraph {
     /**
      * Build a dependency graph from the given bean factory, restricted to the
      * supplied set of bean names (typically all registered bean definitions). Edges
-     * that point to beans outside the supplied set are ignored.
+     * that point to beans outside the supplied set are ignored. Factory-method beans
+     * are co-located with their configuration class (see
+     * {@link #addFactoryColocationEdges}).
      * @param beanFactory the bean factory to introspect
      * @param beanNames the bean names to include as graph nodes
      * @return the resulting dependency graph
      */
     static BeanDependencyGraph build(ConfigurableListableBeanFactory beanFactory, Collection<String> beanNames) {
+        return build(beanFactory, beanNames, true);
+    }
+
+    /**
+     * Build a dependency graph from the given bean factory, restricted to the
+     * supplied set of bean names (typically all registered bean definitions). Edges
+     * that point to beans outside the supplied set are ignored.
+     * @param beanFactory the bean factory to introspect
+     * @param beanNames the bean names to include as graph nodes
+     * @param colocateFactoryMethodBeans whether to add factory&rarr;bean co-location
+     * edges that keep every {@code @Bean} bean on its configuration's thread (see
+     * {@link #addFactoryColocationEdges})
+     * @return the resulting dependency graph
+     */
+    static BeanDependencyGraph build(
+            ConfigurableListableBeanFactory beanFactory,
+            Collection<String> beanNames,
+            boolean colocateFactoryMethodBeans) {
         Set<String> nodes = new LinkedHashSet<>(beanNames);
         Map<String, Set<String>> dependencies = new HashMap<>(nodes.size());
         Map<String, Set<String>> syncDependencies = new HashMap<>(nodes.size());
@@ -124,7 +147,58 @@ final class BeanDependencyGraph {
             dependencies.put(beanName, edges);
             syncDependencies.put(beanName, syncEdges);
         }
+        if (colocateFactoryMethodBeans) {
+            addFactoryColocationEdges(beanFactory, nodes, syncDependencies);
+        }
         return new BeanDependencyGraph(nodes, dependencies, syncDependencies);
+    }
+
+    /**
+     * Add factory&rarr;bean <em>co-location</em> edges that bind every bean produced by a
+     * {@code @Bean} factory method to its configuration class.
+     *
+     * <p>A configuration class is always created on the main thread &mdash; it is the
+     * factory of its {@code @Bean} beans and is therefore force-instantiated there before
+     * any of them is produced. Configuration classes are also the primary site of
+     * <em>dynamic, by-type</em> bean access during context refresh: a CGLIB
+     * self-invocation of another {@code @Bean} method, a captured
+     * {@code ApplicationContext}/{@code BeanFactory} used to look a collaborator up by
+     * type, or an {@code ObjectProvider}/{@code Lazy} resolved from a framework callback
+     * the class implements. Spring Data's {@code SpringDataWebConfiguration} is a
+     * canonical example: from {@code WebMvcConfigurer.addArgumentResolvers} (run on the
+     * main thread) it resolves {@code sortResolver} (its own {@code @Bean}) and
+     * {@code sortCustomizer} (a {@code @Bean} of <em>another</em> configuration) by type
+     * through a captured context. None of these accesses appears at any injection point,
+     * so no static analysis can see them.
+     *
+     * <p>Because such pulls happen on the main thread and target {@code @Bean} beans by
+     * type, the only robust boundary is to keep every {@code @Bean} bean on its
+     * configuration's thread. We therefore record a sync edge from each configuration to
+     * each of its {@code @Bean} beans; the planner then never backgrounds a
+     * factory-method bean while its configuration runs on the main thread. The remaining
+     * background candidates &mdash; component-scanned beans and beans registered as plain
+     * definitions &mdash; are reached only through the framework's ordinary singleton path,
+     * which honours background initialization.
+     *
+     * <p>The edge is recorded only in the sync-connectivity view used by the planner, not
+     * as a construction dependency, so it never introduces a spurious cycle or perturbs
+     * the topological layering (the genuine dependency runs the opposite direction: the
+     * bean depends on its factory).
+     */
+    private static void addFactoryColocationEdges(
+            ConfigurableListableBeanFactory beanFactory, Set<String> nodes, Map<String, Set<String>> syncDependencies) {
+        for (String beanName : nodes) {
+            BeanDefinition mbd = safeGetMergedBeanDefinition(beanFactory, beanName);
+            if (mbd == null) {
+                continue;
+            }
+            String factoryBeanName = mbd.getFactoryBeanName();
+            if (factoryBeanName != null && !factoryBeanName.equals(beanName) && nodes.contains(factoryBeanName)) {
+                syncDependencies
+                        .computeIfAbsent(factoryBeanName, key -> new LinkedHashSet<>())
+                        .add(beanName);
+            }
+        }
     }
 
     private static @Nullable BeanDefinition safeGetMergedBeanDefinition(

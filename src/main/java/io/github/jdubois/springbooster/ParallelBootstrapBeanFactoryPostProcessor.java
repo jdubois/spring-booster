@@ -179,8 +179,12 @@ public class ParallelBootstrapBeanFactoryPostProcessor
         }
 
         // Build the graph over every registered bean definition so that all
-        // dependency relationships (including by-type autowiring) are visible.
-        BeanDependencyGraph graph = BeanDependencyGraph.build(beanFactory, allNames);
+        // dependency relationships (including by-type autowiring) are visible. Unless the
+        // caller has opted in to backgrounding factory-method beans, co-locate every
+        // @Bean bean with its configuration class so the bootstrap stays safe against the
+        // dynamic, by-type lookups that configuration classes perform on the main thread.
+        BeanDependencyGraph graph =
+                BeanDependencyGraph.build(beanFactory, allNames, !this.settings.isBackgroundFactoryMethodBeans());
         Set<String> cyclic = graph.beansInCycles();
         Set<String> forcedMainline = collectForcedMainlineBeans(beanFactory);
 

@@ -73,6 +73,10 @@ class ParallelBootstrapRegistrar implements ImportBeanDefinitionRegistrar {
             if (threadNamePrefix instanceof String prefix && !prefix.isEmpty()) {
                 builder.threadNamePrefix(prefix);
             }
+            Object backgroundFactoryMethodBeans = attributes.get("backgroundFactoryMethodBeans");
+            if (backgroundFactoryMethodBeans instanceof Boolean backgroundValue) {
+                builder.backgroundFactoryMethodBeans(backgroundValue);
+            }
         }
         return builder.build();
     }

@@ -39,10 +39,13 @@ executor down after refresh.
   now resolves by-type / `@Autowired` / `ObjectProvider` edges statically (see §4
   and §5), but lookups performed dynamically from inside bean code (e.g. a captured
   `ObjectProvider` resolved later, or a `BeanFactory.getBean(...)` call) remain
-  invisible. Because of this residual blind spot the default accept-all
-  `candidateFilter` is **not universally safe** on a fully auto-configured Spring
-  Boot application; the recommended usage is a `candidateFilter` scoped to your own
-  packages (see §5.3).
+  invisible. The dominant source of such lookups is `@Configuration` classes, so by
+  default Spring Booster keeps every `@Bean` factory-method bean on the main thread
+  (co-located with its configuration class); this makes the default accept-all
+  `candidateFilter` **safe on a fully auto-configured Spring Boot application**. The
+  narrow residual blind spot — a component or plain-definition bean pulled by type
+  through a direct `getBean(...)` from another bean's initialization code — is rare
+  and app-specific (see §5.3).
 
 ### 1.3 Design goals (in priority order)
 
@@ -96,10 +99,10 @@ All code lives in a single package: `io.github.jdubois.springbooster`.
 
 | Class | Responsibility |
 |---|---|
-| `EnableParallelBootstrap` | Public opt-in annotation. `@Import`s the registrar. Carries tuning attributes (`enabled`, `poolSize`, `threadNamePrefix`). |
+| `EnableParallelBootstrap` | Public opt-in annotation. `@Import`s the registrar. Carries tuning attributes (`enabled`, `poolSize`, `threadNamePrefix`, `backgroundFactoryMethodBeans`). |
 | `ParallelBootstrapRegistrar` | `ImportBeanDefinitionRegistrar` activated by the annotation. Translates annotation attributes into `ParallelBootstrapSettings` and registers the post-processor as an infrastructure bean (idempotently). |
 | `ParallelBootstrapApplicationContextInitializer` | `ApplicationContextInitializer` entry point for programmatic / Spring Boot (`spring.factories`) registration, with no need for the annotation. |
-| `ParallelBootstrapSettings` | Immutable configuration (pool size, thread-name prefix, kill-switch, candidate `Predicate`). Built via a fluent `Builder`. Defines the per-bean opt-out attribute. |
+| `ParallelBootstrapSettings` | Immutable configuration (pool size, thread-name prefix, kill-switch, candidate `Predicate`, `backgroundFactoryMethodBeans` toggle). Built via a fluent `Builder`. Defines the per-bean opt-out attribute. |
 | `BeanDependencyGraph` | Pure in-memory dependency graph of the bean definitions. Models both declared references **and** by-type autowiring edges (via `AutowiredEdgeResolver`), classifying each edge as *forced* or *sync*. Provides topological layering (Kahn) and cycle detection (Tarjan). Never triggers bean creation. |
 | `AutowiredEdgeResolver` | Reflectively resolves the by-type / `@Autowired` / `ObjectProvider` dependency edges that the declarations do not reveal (`@Bean` method params, autowired constructors, `@Autowired` fields/methods), unwrapping `ObjectProvider`/`ObjectFactory`/`Provider`/`Optional`/collections/maps/arrays. Resolves candidate names with eager init disabled, so it never instantiates a bean. |
 | `ParallelBootstrapBeanFactoryPostProcessor` | The engine. Plans candidates (connectivity-safe selection), marks them for background init, installs the bounded executor, and registers a listener to shut it down after refresh. |
@@ -159,6 +162,10 @@ A bean is **structurally eligible only if all** of the following hold:
    `SmartInitializingSingleton`.
 7. It passes the user-supplied **`candidateFilter`** predicate (default: accept
    all).
+8. It is **not a `@Bean` factory-method bean**, *unless* the
+   `backgroundFactoryMethodBeans` setting is enabled. By default every factory-method
+   bean is co-located with its configuration class (§5), because configuration
+   classes are the primary site of dynamic, by-type bean access during refresh.
 
 Every bean that is *not* structurally eligible is treated as a **main-thread**
 (mainline) bean. The connectivity-safe pass (§5) then removes any otherwise-eligible
@@ -253,6 +260,33 @@ fully internal — safe to background. In the Petclinic case the adapter is a
 factory-bean (mainline), so the customizer is pulled mainline and is never
 backgrounded.
 
+#### 5.2.1 Factory-method co-location (the accept-all safety boundary)
+
+The propagation above is sound for every relationship that appears at a
+definition or injection point, but a `@Configuration` class can reach its own — and
+other configurations' — `@Bean` beans **by type, on the main thread, through calls no
+static analysis can see**: a CGLIB self-invocation of another `@Bean` method, a
+captured `ApplicationContext`/`BeanFactory` used for a by-type lookup, or an
+`ObjectProvider`/`Lazy` resolved from a framework callback the class implements
+(`WebMvcConfigurer.addArgumentResolvers`, …).
+
+Because configuration classes are *always* created on the main thread (they are the
+factory of their `@Bean` beans, hence forced-mainline), `BeanDependencyGraph.build`
+adds, by default, a **factory→bean co-location sync edge** from every configuration to
+each of its `@Bean` beans. Mainline propagation then keeps every factory-method bean on
+the main thread. The remaining background candidates — component-scanned beans and
+beans registered as plain definitions — are reached only through the framework's
+ordinary singleton path, which honours background initialization. This is what makes
+the default accept-all `candidateFilter` safe on a fully auto-configured Spring Boot
+application (verified on Spring Petclinic: 56 beans backgrounded, context starts
+cleanly).
+
+Setting `backgroundFactoryMethodBeans(true)` (builder) or
+`@EnableParallelBootstrap(backgroundFactoryMethodBeans = true)` disables the
+co-location edges, making `@Bean` beans eligible again for maximum parallelism — at the
+cost of reintroducing the invisible by-type pull risk, so it should be paired with a
+`candidateFilter` scoped to beans known to be safe.
+
 ### 5.3 Consequences
 
 * All **declaration-level** relationships are now modelled and made safe: explicit
@@ -260,34 +294,26 @@ backgrounded.
   Within that scope, selection is provably safe — a bean is backgrounded only when its
   *visible* sync component is entirely backgroundable — and the bootstrap falls back to
   sequential when in doubt (design goal #1).
-* The trade-off is conservatism: on a large application where most beans are
-  sync-connected to framework/auto-configuration beans, relatively few beans are
-  parallelized. The recommended way to enable the feature on a real application is a
-  `candidateFilter` scoped to your own packages (e.g. `com.example.*`). Thanks to
-  connectivity-safe selection this is now **ergonomic** — you no longer have to
-  hand-pick individual dependency-free beans; any of your beans that is sync-connected
-  to a main-thread bean is pulled back to the main thread automatically. (Verified on
-  Spring Petclinic: a `org.springframework.samples.petclinic`-scoped filter boots
-  reliably.)
-* **Remaining blind spot — accept-all is *not* universally safe.** Dependencies that
-  are not expressed at a definition/injection-point level remain invisible, most
-  importantly a **direct `getBean(...)` call from inside bean code**. A fully
-  auto-configured Spring Boot web application hits exactly this: Spring Data's
-  `SpringDataWebConfiguration` captures the `ApplicationContext` and, from inside its
-  `WebMvcConfigurer.addArgumentResolvers(...)` callback, lazily calls
-  `getBean(SortHandlerMethodArgumentResolver.class)` on the **main** thread. If that
-  resolver was backgrounded (as the default accept-all filter would do), the framework
-  throws `BeanCurrentlyInCreationException`. No static graph can see this edge, so the
-  default accept-all `candidateFilter` is **unsafe on such applications** and a
-  package-scoped (or otherwise curated) filter remains required there.
+* **Accept-all is safe by default.** Keeping every `@Bean` factory-method bean on the
+  main thread (§5.2.1) closes the dominant invisible-lookup channel, so the default
+  accept-all `candidateFilter` boots a fully auto-configured Spring Boot application
+  reliably. The trade-off is that the expensive framework `@Bean` beans (data source,
+  `EntityManagerFactory`, caches, …) are never backgrounded; the beans that *do*
+  parallelize under the default are your component-scanned beans. Applications whose
+  heavyweight beans are components — or that knowingly enable
+  `backgroundFactoryMethodBeans` — see the most benefit.
+* **Narrow residual blind spot.** A bean that is *not* a factory-method bean (a
+  component or plain definition) could still be pulled by type through a **direct
+  `getBean(...)` from inside another bean's initialization code**. This is rare and
+  application-specific; when it happens the bootstrap fails fast with
+  `BeanCurrentlyInCreationException` rather than producing wrong results, and the
+  affected bean can be excluded with a `candidateFilter` or `OPT_OUT_ATTRIBUTE`.
 
 ### 5.4 Possible future work
 
-* **Close the `getBean`-from-bean-code blind spot** so the default accept-all filter
-  becomes safe on fully auto-configured applications — e.g. by never backgrounding
-  `@Bean`-method beans of full-mode `@Configuration` classes (which can be
-  self-invoked via lifecycle callbacks), or by an opt-in "scan bean code for
-  `getBean`/`ObjectProvider` capture" pass. Each trades parallelism for safety.
+* **Opt-in `getBean`-from-bean-code scanning** to also cover the residual component
+  blind spot (above), letting `backgroundFactoryMethodBeans(true)` be safe on more
+  applications.
 * **`@Lazy` / `ObjectProvider` guidance or auto-rewriting** for mainline dependents
   of background beans, which could let more beans be parallelized safely.
 * The `benchmark/` directory provides a reproducible Spring Petclinic startup

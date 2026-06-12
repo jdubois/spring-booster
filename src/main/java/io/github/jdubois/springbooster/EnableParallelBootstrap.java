@@ -81,4 +81,16 @@ public @interface EnableParallelBootstrap {
      * @return the thread name prefix for bootstrap threads
      */
     String threadNamePrefix() default "parallel-bootstrap-";
+
+    /**
+     * Whether beans produced by {@code @Bean} factory methods are eligible for
+     * background initialization. Defaults to {@code false}, which co-locates every
+     * factory-method bean with its (always main-thread) configuration class so that
+     * accept-all bootstrapping stays safe on fully auto-configured applications. Set to
+     * {@code true} to also background factory-method beans for maximum parallelism, at
+     * the cost of reintroducing the invisible by-type pull risk for {@code @Bean} beans.
+     * @return whether factory-method beans may be backgrounded
+     * @see ParallelBootstrapSettings#isBackgroundFactoryMethodBeans()
+     */
+    boolean backgroundFactoryMethodBeans() default false;
 }

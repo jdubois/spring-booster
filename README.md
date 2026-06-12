@@ -14,18 +14,20 @@ The feature is **strictly opt-in**: nothing is parallelized unless you enable it
 explicitly, and it always degrades gracefully to the normal sequential bootstrap
 if anything goes wrong.
 
-> ℹ️ **Much safer, but not safe with the accept-all default on a fully
-> auto-configured app.** The dependency analysis now models **by-type /
-> `@Autowired` / `ObjectProvider` autowiring** in addition to explicit references,
-> and candidate selection is **connectivity-safe**: a bean is parallelized only when
-> no dependency edge connects it — in either direction — to a bean that runs on the
-> main thread. This closes the *visible*-edge gap that earlier versions tripped over.
-> However, dependencies resolved by a **direct `getBean(...)` call from inside bean
-> code** (e.g. Spring Data's `SpringDataWebConfiguration`) are invisible to any static
-> analysis, so the default accept-all filter can still trigger a
-> `BeanCurrentlyInCreationException` on a typical Spring Boot web app. **Recommended
-> usage is a `candidateFilter` scoped to your own packages** — which is now ergonomic
-> (no need to hand-pick beans). See [SPECIFICATION.md](SPECIFICATION.md) §5.
+> ℹ️ **Safe with the accept-all default on fully auto-configured Spring Boot apps.**
+> The dependency analysis models **by-type / `@Autowired` / `ObjectProvider`
+> autowiring** in addition to explicit references, and candidate selection is
+> **connectivity-safe**: a bean is parallelized only when no dependency edge connects
+> it — in either direction — to a bean that runs on the main thread. On top of that,
+> beans produced by `@Bean` **factory methods are kept on the main thread by default**
+> (co-located with their `@Configuration` class), because configuration classes are
+> the main source of dynamic, by-type lookups (`getBean`, `ObjectProvider`, `Lazy`)
+> that no static analysis can see. With these two rules the **default accept-all
+> filter boots a fully auto-configured Spring Boot web app reliably** (verified on
+> Spring Petclinic). Only your component-scanned beans are backgrounded by default; set
+> `backgroundFactoryMethodBeans(true)` to also parallelize `@Bean` beans for maximum
+> throughput (best paired with a `candidateFilter`). See
+> [SPECIFICATION.md](SPECIFICATION.md) §5.
 
 ---
 
@@ -41,6 +43,11 @@ if anything goes wrong.
   factory beans, framework infrastructure beans such as `BeanPostProcessor`s, anything
   you opt out, and any bean connected by a dependency edge to a bean that must run on
   the main thread.
+* **Keeps `@Bean` factory-method beans on the main thread by default**, co-located
+  with their `@Configuration` class — configuration classes are the main source of
+  dynamic, by-type lookups (`getBean`, `ObjectProvider`, `Lazy`) that static analysis
+  cannot see — which is what makes accept-all bootstrapping safe. Opt in with
+  `backgroundFactoryMethodBeans(true)` to parallelize those too.
 * Marks those beans for background initialization and installs a **bounded
   bootstrap thread pool** (sized by default at twice the available processor
   count) that the bean factory uses during `preInstantiateSingletons()`.
@@ -101,6 +108,23 @@ You can also opt a single bean definition out of background initialization:
 ```java
 beanDefinition.setAttribute(ParallelBootstrapSettings.OPT_OUT_ATTRIBUTE, Boolean.TRUE);
 ```
+
+### Backgrounding `@Bean` factory-method beans
+
+By default, beans produced by `@Bean` factory methods stay on the main thread
+(co-located with their `@Configuration` class) so that accept-all bootstrapping is
+safe — only component-scanned beans are parallelized. To also background `@Bean`
+beans for maximum parallelism, opt in:
+
+```java
+@EnableParallelBootstrap(backgroundFactoryMethodBeans = true)
+// or
+ParallelBootstrapSettings.builder().backgroundFactoryMethodBeans(true).build();
+```
+
+This reintroduces the risk that a main-thread bean pulls a backgrounded `@Bean` bean
+by type through a call the analysis cannot see, so pair it with a `candidateFilter`
+scoped to beans you know are safe.
 
 ## Requirements
 

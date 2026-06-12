@@ -207,6 +207,37 @@ class BeanDependencyGraphTests {
         assertThat(graph.getSyncDependencies("b")).doesNotContain("a");
     }
 
+    @Test
+    void factoryMethodBeanIsColocatedWithConfigurationByDefault() {
+        register("config", FactoryConfig.class);
+        RootBeanDefinition product = new RootBeanDefinition();
+        product.setFactoryBeanName("config");
+        product.setFactoryMethodName("product");
+        this.beanFactory.registerBeanDefinition("product", product);
+
+        BeanDependencyGraph graph = BeanDependencyGraph.build(this.beanFactory, List.of("config", "product"), true);
+
+        // The configuration gains a co-location sync edge to its @Bean product, so the
+        // planner keeps the product on the configuration's (main) thread.
+        assertThat(graph.getSyncDependencies("config")).contains("product");
+        // The genuine construction dependency still runs in the opposite direction.
+        assertThat(graph.getDependencies("product")).contains("config");
+    }
+
+    @Test
+    void factoryMethodColocationCanBeDisabled() {
+        register("config", FactoryConfig.class);
+        RootBeanDefinition product = new RootBeanDefinition();
+        product.setFactoryBeanName("config");
+        product.setFactoryMethodName("product");
+        this.beanFactory.registerBeanDefinition("product", product);
+
+        BeanDependencyGraph graph = BeanDependencyGraph.build(this.beanFactory, List.of("config", "product"), false);
+
+        assertThat(graph.getSyncDependencies("config")).doesNotContain("product");
+        assertThat(graph.getDependencies("product")).contains("config");
+    }
+
     private void register(String beanName, Class<?> type) {
         this.beanFactory.registerBeanDefinition(beanName, new RootBeanDefinition(type));
     }
@@ -226,6 +257,13 @@ class BeanDependencyGraphTests {
     }
 
     static class Leaf {}
+
+    static class FactoryConfig {
+
+        Leaf product() {
+            return new Leaf();
+        }
+    }
 
     static class ConstructorConsumer {
         ConstructorConsumer(Leaf leaf) {}
