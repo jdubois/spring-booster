@@ -105,27 +105,41 @@ Spring Booster does not pin the Spring Framework version directly. Instead it
 imports the `org.springframework.boot:spring-boot-dependencies:4.1.0` platform
 BOM, so the Spring Framework version (and the versions of all other dependencies)
 always match exactly what Spring Boot 4.1.0 ships. Bumping the Boot line in
-`build.gradle` is the supported way to move to a newer Spring baseline.
+`pom.xml` is the supported way to move to a newer Spring baseline.
 
 ## How to build
 
-```bash
-./gradlew build
-```
-
-This compiles the code, runs Checkstyle-free JavaDoc, assembles the `jar`,
-`-sources.jar` and `-javadoc.jar`, and runs the test suite.
-
-To assemble the artifacts without running the tests:
+This project builds with **Maven** and ships the **Maven Wrapper**, so you do not
+need a local Maven installation:
 
 ```bash
-./gradlew assemble
+./mvnw verify
 ```
+
+This compiles the code, runs the test suite, assembles the `jar`, `-sources.jar`
+and `-javadoc.jar`, and verifies the code formatting.
+
+> **Build with a Java 17 JDK.** The Palantir Java Format engine used by Spotless
+> runs under the JDK that runs the build, so the build is verified against JDK 17
+> (the project's baseline). Point `JAVA_HOME` at a JDK 17 before building.
+
+### Code formatting
+
+Java code is formatted with [Spotless](https://github.com/diffplug/spotless) using
+[Palantir Java Format](https://github.com/palantir/palantir-java-format). Reformat
+everything before committing:
+
+```bash
+./mvnw spotless:apply
+```
+
+`./mvnw verify` runs `spotless:check` and fails the build if anything is not
+formatted.
 
 ## How to test
 
 ```bash
-./gradlew test
+./mvnw test
 ```
 
 The test suite (JUnit Jupiter + AssertJ) covers the dependency-graph analysis,
@@ -138,11 +152,11 @@ assert that beans are wired correctly and created on bootstrap threads.
 ### Install into the local Maven repository (`~/.m2`)
 
 ```bash
-./gradlew publishToMavenLocal
+./mvnw install
 ```
 
-This publishes `io.github.jdubois:spring-booster:0.1.0-SNAPSHOT` (jar, sources,
-javadoc and POM) so other local projects can depend on it.
+This installs `io.github.jdubois:spring-booster:0.1.0-SNAPSHOT` (jar, sources,
+javadoc and POM) into `~/.m2` so other local projects can depend on it.
 
 ### Consume it
 
@@ -168,6 +182,11 @@ dependencies {
     <version>0.1.0-SNAPSHOT</version>
 </dependency>
 ```
+
+## Contributing
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for how to set
+up a development environment, build with Maven, and submit changes.
 
 ## License
 

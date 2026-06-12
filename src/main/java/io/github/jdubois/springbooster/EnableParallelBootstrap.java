@@ -21,7 +21,6 @@ import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
-
 import org.springframework.context.annotation.Import;
 
 /**
@@ -61,23 +60,25 @@ import org.springframework.context.annotation.Import;
 @Import(ParallelBootstrapRegistrar.class)
 public @interface EnableParallelBootstrap {
 
-	/**
-	 * Global kill-switch. When {@code false}, the post-processor is registered but
-	 * performs no work, so the context bootstraps sequentially.
-	 */
-	boolean enabled() default true;
+    /**
+     * Global kill-switch. When {@code false}, the post-processor is registered but
+     * performs no work, so the context bootstraps sequentially.
+     * @return whether parallel bootstrapping is enabled
+     */
+    boolean enabled() default true;
 
-	/**
-	 * The number of threads in the bounded bootstrap pool. A value of {@code -1}
-	 * (the default) derives the size as twice the number of available processors
-	 * (with a floor of {@code 2}), since bootstrap work is often I/O- or
-	 * blocking-bound. Set an explicit positive value to override this.
-	 */
-	int poolSize() default -1;
+    /**
+     * The number of threads in the bounded bootstrap pool. A value of {@code -1}
+     * (the default) derives the size as twice the number of available processors
+     * (with a floor of {@code 2}), since bootstrap work is often I/O- or
+     * blocking-bound. Set an explicit positive value to override this.
+     * @return the bootstrap pool size, or {@code -1} to derive it automatically
+     */
+    int poolSize() default -1;
 
-	/**
-	 * The thread name prefix used for bootstrap threads.
-	 */
-	String threadNamePrefix() default "parallel-bootstrap-";
-
+    /**
+     * The thread name prefix used for bootstrap threads.
+     * @return the thread name prefix for bootstrap threads
+     */
+    String threadNamePrefix() default "parallel-bootstrap-";
 }

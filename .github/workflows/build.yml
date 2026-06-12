@@ -1,0 +1,61 @@
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: write
+
+jobs:
+  build:
+    name: Build (Java ${{ matrix.java }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The Palantir Java Format engine used by Spotless runs under the build
+        # JDK, so the build is pinned to the project's Java 17 baseline.
+        java: [ '17' ]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up JDK ${{ matrix.java }}
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: maven
+
+      - name: Build and verify
+        # `install` runs the full lifecycle: compile, tests, the -sources/-javadoc
+        # jars, and the Spotless formatting check (bound to the verify phase).
+        run: ./mvnw -B -ntp clean install
+
+      - name: Publish test report
+        if: ${{ !cancelled() }}
+        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3
+        with:
+          name: Java tests (Surefire)
+          path: '**/target/surefire-reports/TEST-*.xml'
+          reporter: java-junit
+          fail-on-error: false
+          fail-on-empty: false
+
+      - name: Upload JUnit test reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: junit-test-reports
+          path: '**/target/surefire-reports/TEST-*.xml'
+          if-no-files-found: ignore
+          retention-days: 7

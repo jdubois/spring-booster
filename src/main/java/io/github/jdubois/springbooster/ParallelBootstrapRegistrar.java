@@ -17,9 +17,7 @@
 package io.github.jdubois.springbooster;
 
 import java.util.Map;
-
 import org.jspecify.annotations.Nullable;
-
 import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.beans.factory.support.AbstractBeanDefinition;
 import org.springframework.beans.factory.support.BeanDefinitionBuilder;
@@ -42,43 +40,40 @@ import org.springframework.core.type.AnnotationMetadata;
  */
 class ParallelBootstrapRegistrar implements ImportBeanDefinitionRegistrar {
 
-	private static final String BEAN_NAME =
-			"io.github.jdubois.springbooster.internalParallelBootstrapPostProcessor";
+    private static final String BEAN_NAME = "io.github.jdubois.springbooster.internalParallelBootstrapPostProcessor";
 
+    @Override
+    public void registerBeanDefinitions(AnnotationMetadata importingClassMetadata, BeanDefinitionRegistry registry) {
+        if (registry.containsBeanDefinition(BEAN_NAME)) {
+            return;
+        }
+        ParallelBootstrapSettings settings = buildSettings(importingClassMetadata);
+        AbstractBeanDefinition beanDefinition = BeanDefinitionBuilder.rootBeanDefinition(
+                        ParallelBootstrapBeanFactoryPostProcessor.class)
+                .addConstructorArgValue(settings)
+                .setRole(BeanDefinition.ROLE_INFRASTRUCTURE)
+                .getBeanDefinition();
+        registry.registerBeanDefinition(BEAN_NAME, beanDefinition);
+    }
 
-	@Override
-	public void registerBeanDefinitions(AnnotationMetadata importingClassMetadata, BeanDefinitionRegistry registry) {
-		if (registry.containsBeanDefinition(BEAN_NAME)) {
-			return;
-		}
-		ParallelBootstrapSettings settings = buildSettings(importingClassMetadata);
-		AbstractBeanDefinition beanDefinition = BeanDefinitionBuilder
-				.rootBeanDefinition(ParallelBootstrapBeanFactoryPostProcessor.class)
-				.addConstructorArgValue(settings)
-				.setRole(BeanDefinition.ROLE_INFRASTRUCTURE)
-				.getBeanDefinition();
-		registry.registerBeanDefinition(BEAN_NAME, beanDefinition);
-	}
-
-	private ParallelBootstrapSettings buildSettings(AnnotationMetadata metadata) {
-		ParallelBootstrapSettings.Builder builder = ParallelBootstrapSettings.builder();
-		Map<String, @Nullable Object> attributes =
-				metadata.getAnnotationAttributes(EnableParallelBootstrap.class.getName());
-		if (attributes != null) {
-			Object enabled = attributes.get("enabled");
-			if (enabled instanceof Boolean enabledValue) {
-				builder.enabled(enabledValue);
-			}
-			Object poolSize = attributes.get("poolSize");
-			if (poolSize instanceof Number poolSizeValue && poolSizeValue.intValue() > 0) {
-				builder.poolSize(poolSizeValue.intValue());
-			}
-			Object threadNamePrefix = attributes.get("threadNamePrefix");
-			if (threadNamePrefix instanceof String prefix && !prefix.isEmpty()) {
-				builder.threadNamePrefix(prefix);
-			}
-		}
-		return builder.build();
-	}
-
+    private ParallelBootstrapSettings buildSettings(AnnotationMetadata metadata) {
+        ParallelBootstrapSettings.Builder builder = ParallelBootstrapSettings.builder();
+        Map<String, @Nullable Object> attributes =
+                metadata.getAnnotationAttributes(EnableParallelBootstrap.class.getName());
+        if (attributes != null) {
+            Object enabled = attributes.get("enabled");
+            if (enabled instanceof Boolean enabledValue) {
+                builder.enabled(enabledValue);
+            }
+            Object poolSize = attributes.get("poolSize");
+            if (poolSize instanceof Number poolSizeValue && poolSizeValue.intValue() > 0) {
+                builder.poolSize(poolSizeValue.intValue());
+            }
+            Object threadNamePrefix = attributes.get("threadNamePrefix");
+            if (threadNamePrefix instanceof String prefix && !prefix.isEmpty()) {
+                builder.threadNamePrefix(prefix);
+            }
+        }
+        return builder.build();
+    }
 }

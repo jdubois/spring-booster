@@ -16,18 +16,16 @@
 
 package io.github.jdubois.springbooster;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import java.util.List;
 import java.util.Set;
-
 import org.junit.jupiter.api.Test;
-
 import org.springframework.beans.MutablePropertyValues;
 import org.springframework.beans.factory.config.ConstructorArgumentValues;
 import org.springframework.beans.factory.config.RuntimeBeanReference;
 import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 import org.springframework.beans.factory.support.RootBeanDefinition;
-
-import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Tests for {@link BeanDependencyGraph}.
@@ -36,143 +34,140 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class BeanDependencyGraphTests {
 
-	private final DefaultListableBeanFactory beanFactory = new DefaultListableBeanFactory();
+    private final DefaultListableBeanFactory beanFactory = new DefaultListableBeanFactory();
 
+    @Test
+    void constructorReferenceProducesEdge() {
+        registerWithConstructorRefs("a");
+        registerWithConstructorRefs("b", "a");
 
-	@Test
-	void constructorReferenceProducesEdge() {
-		registerWithConstructorRefs("a");
-		registerWithConstructorRefs("b", "a");
+        BeanDependencyGraph graph = build("a", "b");
 
-		BeanDependencyGraph graph = build("a", "b");
+        assertThat(graph.getDependencies("b")).containsExactly("a");
+        assertThat(graph.getDependencies("a")).isEmpty();
+    }
 
-		assertThat(graph.getDependencies("b")).containsExactly("a");
-		assertThat(graph.getDependencies("a")).isEmpty();
-	}
+    @Test
+    void propertyReferenceProducesEdge() {
+        registerWithConstructorRefs("a");
+        RootBeanDefinition b = new RootBeanDefinition(Object.class);
+        b.setPropertyValues(new MutablePropertyValues().add("dep", new RuntimeBeanReference("a")));
+        this.beanFactory.registerBeanDefinition("b", b);
 
-	@Test
-	void propertyReferenceProducesEdge() {
-		registerWithConstructorRefs("a");
-		RootBeanDefinition b = new RootBeanDefinition(Object.class);
-		b.setPropertyValues(new MutablePropertyValues().add("dep", new RuntimeBeanReference("a")));
-		this.beanFactory.registerBeanDefinition("b", b);
+        BeanDependencyGraph graph = build("a", "b");
 
-		BeanDependencyGraph graph = build("a", "b");
+        assertThat(graph.getDependencies("b")).containsExactly("a");
+    }
 
-		assertThat(graph.getDependencies("b")).containsExactly("a");
-	}
+    @Test
+    void dependsOnProducesEdge() {
+        registerWithConstructorRefs("a");
+        RootBeanDefinition b = new RootBeanDefinition(Object.class);
+        b.setDependsOn("a");
+        this.beanFactory.registerBeanDefinition("b", b);
 
-	@Test
-	void dependsOnProducesEdge() {
-		registerWithConstructorRefs("a");
-		RootBeanDefinition b = new RootBeanDefinition(Object.class);
-		b.setDependsOn("a");
-		this.beanFactory.registerBeanDefinition("b", b);
+        BeanDependencyGraph graph = build("a", "b");
 
-		BeanDependencyGraph graph = build("a", "b");
+        assertThat(graph.getDependencies("b")).containsExactly("a");
+    }
 
-		assertThat(graph.getDependencies("b")).containsExactly("a");
-	}
+    @Test
+    void edgesToUnknownNodesAreIgnored() {
+        registerWithConstructorRefs("b", "missing");
 
-	@Test
-	void edgesToUnknownNodesAreIgnored() {
-		registerWithConstructorRefs("b", "missing");
+        BeanDependencyGraph graph = build("b");
 
-		BeanDependencyGraph graph = build("b");
+        assertThat(graph.getDependencies("b")).isEmpty();
+    }
 
-		assertThat(graph.getDependencies("b")).isEmpty();
-	}
+    @Test
+    void layersOrderDependenciesBeforeDependents() {
+        registerWithConstructorRefs("a");
+        registerWithConstructorRefs("b", "a");
+        registerWithConstructorRefs("c", "b");
 
-	@Test
-	void layersOrderDependenciesBeforeDependents() {
-		registerWithConstructorRefs("a");
-		registerWithConstructorRefs("b", "a");
-		registerWithConstructorRefs("c", "b");
+        List<Set<String>> layers = build("a", "b", "c").computeLayers();
 
-		List<Set<String>> layers = build("a", "b", "c").computeLayers();
+        assertThat(layers).containsExactly(Set.of("a"), Set.of("b"), Set.of("c"));
+    }
 
-		assertThat(layers).containsExactly(Set.of("a"), Set.of("b"), Set.of("c"));
-	}
+    @Test
+    void independentBeansShareALayer() {
+        registerWithConstructorRefs("a");
+        registerWithConstructorRefs("b");
+        registerWithConstructorRefs("root", "a", "b");
 
-	@Test
-	void independentBeansShareALayer() {
-		registerWithConstructorRefs("a");
-		registerWithConstructorRefs("b");
-		registerWithConstructorRefs("root", "a", "b");
+        List<Set<String>> layers = build("a", "b", "root").computeLayers();
 
-		List<Set<String>> layers = build("a", "b", "root").computeLayers();
+        assertThat(layers).hasSize(2);
+        assertThat(layers.get(0)).containsExactlyInAnyOrder("a", "b");
+        assertThat(layers.get(1)).containsExactly("root");
+    }
 
-		assertThat(layers).hasSize(2);
-		assertThat(layers.get(0)).containsExactlyInAnyOrder("a", "b");
-		assertThat(layers.get(1)).containsExactly("root");
-	}
+    @Test
+    void diamondDependenciesAreLayeredCorrectly() {
+        registerWithConstructorRefs("top");
+        registerWithConstructorRefs("left", "top");
+        registerWithConstructorRefs("right", "top");
+        registerWithConstructorRefs("bottom", "left", "right");
 
-	@Test
-	void diamondDependenciesAreLayeredCorrectly() {
-		registerWithConstructorRefs("top");
-		registerWithConstructorRefs("left", "top");
-		registerWithConstructorRefs("right", "top");
-		registerWithConstructorRefs("bottom", "left", "right");
+        List<Set<String>> layers = build("top", "left", "right", "bottom").computeLayers();
 
-		List<Set<String>> layers = build("top", "left", "right", "bottom").computeLayers();
+        assertThat(layers.get(0)).containsExactly("top");
+        assertThat(layers.get(1)).containsExactlyInAnyOrder("left", "right");
+        assertThat(layers.get(2)).containsExactly("bottom");
+    }
 
-		assertThat(layers.get(0)).containsExactly("top");
-		assertThat(layers.get(1)).containsExactlyInAnyOrder("left", "right");
-		assertThat(layers.get(2)).containsExactly("bottom");
-	}
+    @Test
+    void directCycleIsDetected() {
+        registerWithConstructorRefs("a", "b");
+        registerWithConstructorRefs("b", "a");
 
-	@Test
-	void directCycleIsDetected() {
-		registerWithConstructorRefs("a", "b");
-		registerWithConstructorRefs("b", "a");
+        Set<String> cyclic = build("a", "b").beansInCycles();
 
-		Set<String> cyclic = build("a", "b").beansInCycles();
+        assertThat(cyclic).containsExactlyInAnyOrder("a", "b");
+    }
 
-		assertThat(cyclic).containsExactlyInAnyOrder("a", "b");
-	}
+    @Test
+    void selfReferenceIsDetectedAsCycle() {
+        registerWithConstructorRefs("a", "a");
 
-	@Test
-	void selfReferenceIsDetectedAsCycle() {
-		registerWithConstructorRefs("a", "a");
+        Set<String> cyclic = build("a").beansInCycles();
 
-		Set<String> cyclic = build("a").beansInCycles();
+        assertThat(cyclic).containsExactly("a");
+    }
 
-		assertThat(cyclic).containsExactly("a");
-	}
+    @Test
+    void largerCycleIsDetectedAndAcyclicBeansAreNot() {
+        registerWithConstructorRefs("a", "b");
+        registerWithConstructorRefs("b", "c");
+        registerWithConstructorRefs("c", "a");
+        registerWithConstructorRefs("standalone");
 
-	@Test
-	void largerCycleIsDetectedAndAcyclicBeansAreNot() {
-		registerWithConstructorRefs("a", "b");
-		registerWithConstructorRefs("b", "c");
-		registerWithConstructorRefs("c", "a");
-		registerWithConstructorRefs("standalone");
+        Set<String> cyclic = build("a", "b", "c", "standalone").beansInCycles();
 
-		Set<String> cyclic = build("a", "b", "c", "standalone").beansInCycles();
+        assertThat(cyclic).containsExactlyInAnyOrder("a", "b", "c");
+    }
 
-		assertThat(cyclic).containsExactlyInAnyOrder("a", "b", "c");
-	}
+    @Test
+    void acyclicGraphHasNoCycles() {
+        registerWithConstructorRefs("a");
+        registerWithConstructorRefs("b", "a");
 
-	@Test
-	void acyclicGraphHasNoCycles() {
-		registerWithConstructorRefs("a");
-		registerWithConstructorRefs("b", "a");
+        assertThat(build("a", "b").beansInCycles()).isEmpty();
+    }
 
-		assertThat(build("a", "b").beansInCycles()).isEmpty();
-	}
+    private void registerWithConstructorRefs(String beanName, String... refs) {
+        RootBeanDefinition bd = new RootBeanDefinition(Object.class);
+        ConstructorArgumentValues cav = new ConstructorArgumentValues();
+        for (String ref : refs) {
+            cav.addGenericArgumentValue(new RuntimeBeanReference(ref));
+        }
+        bd.setConstructorArgumentValues(cav);
+        this.beanFactory.registerBeanDefinition(beanName, bd);
+    }
 
-
-	private void registerWithConstructorRefs(String beanName, String... refs) {
-		RootBeanDefinition bd = new RootBeanDefinition(Object.class);
-		ConstructorArgumentValues cav = new ConstructorArgumentValues();
-		for (String ref : refs) {
-			cav.addGenericArgumentValue(new RuntimeBeanReference(ref));
-		}
-		bd.setConstructorArgumentValues(cav);
-		this.beanFactory.registerBeanDefinition(beanName, bd);
-	}
-
-	private BeanDependencyGraph build(String... beanNames) {
-		return BeanDependencyGraph.build(this.beanFactory, List.of(beanNames));
-	}
-
+    private BeanDependencyGraph build(String... beanNames) {
+        return BeanDependencyGraph.build(this.beanFactory, List.of(beanNames));
+    }
 }

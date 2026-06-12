@@ -43,32 +43,28 @@ import org.springframework.util.Assert;
  * @see EnableParallelBootstrap
  */
 public class ParallelBootstrapApplicationContextInitializer
-		implements ApplicationContextInitializer<ConfigurableApplicationContext> {
+        implements ApplicationContextInitializer<ConfigurableApplicationContext> {
 
-	private final ParallelBootstrapSettings settings;
+    private final ParallelBootstrapSettings settings;
 
+    /**
+     * Create an initializer with default settings.
+     */
+    public ParallelBootstrapApplicationContextInitializer() {
+        this(ParallelBootstrapSettings.withDefaults());
+    }
 
-	/**
-	 * Create an initializer with default settings.
-	 */
-	public ParallelBootstrapApplicationContextInitializer() {
-		this(ParallelBootstrapSettings.withDefaults());
-	}
+    /**
+     * Create an initializer with the given settings.
+     * @param settings the parallel bootstrap settings (must not be {@code null})
+     */
+    public ParallelBootstrapApplicationContextInitializer(ParallelBootstrapSettings settings) {
+        Assert.notNull(settings, "'settings' must not be null");
+        this.settings = settings;
+    }
 
-	/**
-	 * Create an initializer with the given settings.
-	 * @param settings the parallel bootstrap settings (must not be {@code null})
-	 */
-	public ParallelBootstrapApplicationContextInitializer(ParallelBootstrapSettings settings) {
-		Assert.notNull(settings, "'settings' must not be null");
-		this.settings = settings;
-	}
-
-
-	@Override
-	public void initialize(ConfigurableApplicationContext applicationContext) {
-		applicationContext.addBeanFactoryPostProcessor(
-				new ParallelBootstrapBeanFactoryPostProcessor(this.settings));
-	}
-
+    @Override
+    public void initialize(ConfigurableApplicationContext applicationContext) {
+        applicationContext.addBeanFactoryPostProcessor(new ParallelBootstrapBeanFactoryPostProcessor(this.settings));
+    }
 }

@@ -16,18 +16,16 @@
 
 package io.github.jdubois.springbooster;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import java.util.List;
-
 import org.junit.jupiter.api.Test;
-
 import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.beans.factory.config.ConstructorArgumentValues;
 import org.springframework.beans.factory.config.RuntimeBeanReference;
 import org.springframework.beans.factory.support.AbstractBeanDefinition;
 import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 import org.springframework.beans.factory.support.RootBeanDefinition;
-
-import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Planning and marking tests for {@link ParallelBootstrapBeanFactoryPostProcessor}
@@ -37,130 +35,126 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class ParallelBootstrapBeanFactoryPostProcessorTests {
 
-	private final DefaultListableBeanFactory beanFactory = new DefaultListableBeanFactory();
+    private final DefaultListableBeanFactory beanFactory = new DefaultListableBeanFactory();
 
+    @Test
+    void marksSafeSingletonsForBackgroundInitAndInstallsExecutor() {
+        registerSingleton("a");
+        registerSingleton("b");
 
-	@Test
-	void marksSafeSingletonsForBackgroundInitAndInstallsExecutor() {
-		registerSingleton("a");
-		registerSingleton("b");
+        new ParallelBootstrapBeanFactoryPostProcessor().postProcessBeanFactory(this.beanFactory);
 
-		new ParallelBootstrapBeanFactoryPostProcessor().postProcessBeanFactory(this.beanFactory);
+        assertThat(isBackgroundInit("a")).isTrue();
+        assertThat(isBackgroundInit("b")).isTrue();
+        assertThat(this.beanFactory.getBootstrapExecutor()).isNotNull();
+    }
 
-		assertThat(isBackgroundInit("a")).isTrue();
-		assertThat(isBackgroundInit("b")).isTrue();
-		assertThat(this.beanFactory.getBootstrapExecutor()).isNotNull();
-	}
+    @Test
+    void doesNotMarkLazyBeans() {
+        RootBeanDefinition lazy = new RootBeanDefinition(Object.class);
+        lazy.setLazyInit(true);
+        this.beanFactory.registerBeanDefinition("lazy", lazy);
+        registerSingleton("eager");
 
-	@Test
-	void doesNotMarkLazyBeans() {
-		RootBeanDefinition lazy = new RootBeanDefinition(Object.class);
-		lazy.setLazyInit(true);
-		this.beanFactory.registerBeanDefinition("lazy", lazy);
-		registerSingleton("eager");
+        new ParallelBootstrapBeanFactoryPostProcessor().postProcessBeanFactory(this.beanFactory);
 
-		new ParallelBootstrapBeanFactoryPostProcessor().postProcessBeanFactory(this.beanFactory);
+        assertThat(isBackgroundInit("lazy")).isFalse();
+        assertThat(isBackgroundInit("eager")).isTrue();
+    }
 
-		assertThat(isBackgroundInit("lazy")).isFalse();
-		assertThat(isBackgroundInit("eager")).isTrue();
-	}
+    @Test
+    void doesNotMarkPrototypeBeans() {
+        RootBeanDefinition prototype = new RootBeanDefinition(Object.class);
+        prototype.setScope(AbstractBeanDefinition.SCOPE_PROTOTYPE);
+        this.beanFactory.registerBeanDefinition("prototype", prototype);
 
-	@Test
-	void doesNotMarkPrototypeBeans() {
-		RootBeanDefinition prototype = new RootBeanDefinition(Object.class);
-		prototype.setScope(AbstractBeanDefinition.SCOPE_PROTOTYPE);
-		this.beanFactory.registerBeanDefinition("prototype", prototype);
+        new ParallelBootstrapBeanFactoryPostProcessor().postProcessBeanFactory(this.beanFactory);
 
-		new ParallelBootstrapBeanFactoryPostProcessor().postProcessBeanFactory(this.beanFactory);
+        assertThat(isBackgroundInit("prototype")).isFalse();
+    }
 
-		assertThat(isBackgroundInit("prototype")).isFalse();
-	}
+    @Test
+    void doesNotMarkInfrastructurePostProcessors() {
+        this.beanFactory.registerBeanDefinition("bpp", new RootBeanDefinition(SampleBeanPostProcessor.class));
 
-	@Test
-	void doesNotMarkInfrastructurePostProcessors() {
-		this.beanFactory.registerBeanDefinition("bpp", new RootBeanDefinition(SampleBeanPostProcessor.class));
+        new ParallelBootstrapBeanFactoryPostProcessor().postProcessBeanFactory(this.beanFactory);
 
-		new ParallelBootstrapBeanFactoryPostProcessor().postProcessBeanFactory(this.beanFactory);
+        assertThat(isBackgroundInit("bpp")).isFalse();
+    }
 
-		assertThat(isBackgroundInit("bpp")).isFalse();
-	}
+    @Test
+    void doesNotMarkBeansInvolvedInCycles() {
+        registerWithConstructorRef("a", "b");
+        registerWithConstructorRef("b", "a");
 
-	@Test
-	void doesNotMarkBeansInvolvedInCycles() {
-		registerWithConstructorRef("a", "b");
-		registerWithConstructorRef("b", "a");
+        List<String> candidates = new ParallelBootstrapBeanFactoryPostProcessor().planCandidates(this.beanFactory);
 
-		List<String> candidates = new ParallelBootstrapBeanFactoryPostProcessor().planCandidates(this.beanFactory);
+        assertThat(candidates).doesNotContain("a", "b");
+    }
 
-		assertThat(candidates).doesNotContain("a", "b");
-	}
+    @Test
+    void doesNotMarkBeansThatOptedOut() {
+        RootBeanDefinition optedOut = new RootBeanDefinition(Object.class);
+        optedOut.setAttribute(ParallelBootstrapSettings.OPT_OUT_ATTRIBUTE, Boolean.TRUE);
+        this.beanFactory.registerBeanDefinition("optedOut", optedOut);
+        registerSingleton("included");
 
-	@Test
-	void doesNotMarkBeansThatOptedOut() {
-		RootBeanDefinition optedOut = new RootBeanDefinition(Object.class);
-		optedOut.setAttribute(ParallelBootstrapSettings.OPT_OUT_ATTRIBUTE, Boolean.TRUE);
-		this.beanFactory.registerBeanDefinition("optedOut", optedOut);
-		registerSingleton("included");
+        List<String> candidates = new ParallelBootstrapBeanFactoryPostProcessor().planCandidates(this.beanFactory);
 
-		List<String> candidates = new ParallelBootstrapBeanFactoryPostProcessor().planCandidates(this.beanFactory);
+        assertThat(candidates).contains("included").doesNotContain("optedOut");
+    }
 
-		assertThat(candidates).contains("included").doesNotContain("optedOut");
-	}
+    @Test
+    void respectsCustomCandidateFilter() {
+        registerSingleton("keep");
+        registerSingleton("drop");
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                .candidateFilter(name -> name.equals("keep"))
+                .build();
 
-	@Test
-	void respectsCustomCandidateFilter() {
-		registerSingleton("keep");
-		registerSingleton("drop");
-		ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
-				.candidateFilter(name -> name.equals("keep"))
-				.build();
+        List<String> candidates =
+                new ParallelBootstrapBeanFactoryPostProcessor(settings).planCandidates(this.beanFactory);
 
-		List<String> candidates =
-				new ParallelBootstrapBeanFactoryPostProcessor(settings).planCandidates(this.beanFactory);
+        assertThat(candidates).containsExactly("keep");
+    }
 
-		assertThat(candidates).containsExactly("keep");
-	}
+    @Test
+    void killSwitchDisablesPlanningAndExecutor() {
+        registerSingleton("a");
+        ParallelBootstrapSettings settings =
+                ParallelBootstrapSettings.builder().enabled(false).build();
 
-	@Test
-	void killSwitchDisablesPlanningAndExecutor() {
-		registerSingleton("a");
-		ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder().enabled(false).build();
+        new ParallelBootstrapBeanFactoryPostProcessor(settings).postProcessBeanFactory(this.beanFactory);
 
-		new ParallelBootstrapBeanFactoryPostProcessor(settings).postProcessBeanFactory(this.beanFactory);
+        assertThat(isBackgroundInit("a")).isFalse();
+        assertThat(this.beanFactory.getBootstrapExecutor()).isNull();
+    }
 
-		assertThat(isBackgroundInit("a")).isFalse();
-		assertThat(this.beanFactory.getBootstrapExecutor()).isNull();
-	}
+    @Test
+    void doesNotOverrideExistingBootstrapExecutor() {
+        registerSingleton("a");
+        this.beanFactory.setBootstrapExecutor(Runnable::run);
 
-	@Test
-	void doesNotOverrideExistingBootstrapExecutor() {
-		registerSingleton("a");
-		this.beanFactory.setBootstrapExecutor(Runnable::run);
+        new ParallelBootstrapBeanFactoryPostProcessor().postProcessBeanFactory(this.beanFactory);
 
-		new ParallelBootstrapBeanFactoryPostProcessor().postProcessBeanFactory(this.beanFactory);
+        assertThat(isBackgroundInit("a")).isFalse();
+    }
 
-		assertThat(isBackgroundInit("a")).isFalse();
-	}
+    private void registerSingleton(String beanName) {
+        this.beanFactory.registerBeanDefinition(beanName, new RootBeanDefinition(Object.class));
+    }
 
+    private void registerWithConstructorRef(String beanName, String ref) {
+        RootBeanDefinition bd = new RootBeanDefinition(Object.class);
+        ConstructorArgumentValues cav = new ConstructorArgumentValues();
+        cav.addGenericArgumentValue(new RuntimeBeanReference(ref));
+        bd.setConstructorArgumentValues(cav);
+        this.beanFactory.registerBeanDefinition(beanName, bd);
+    }
 
-	private void registerSingleton(String beanName) {
-		this.beanFactory.registerBeanDefinition(beanName, new RootBeanDefinition(Object.class));
-	}
+    private boolean isBackgroundInit(String beanName) {
+        return ((AbstractBeanDefinition) this.beanFactory.getBeanDefinition(beanName)).isBackgroundInit();
+    }
 
-	private void registerWithConstructorRef(String beanName, String ref) {
-		RootBeanDefinition bd = new RootBeanDefinition(Object.class);
-		ConstructorArgumentValues cav = new ConstructorArgumentValues();
-		cav.addGenericArgumentValue(new RuntimeBeanReference(ref));
-		bd.setConstructorArgumentValues(cav);
-		this.beanFactory.registerBeanDefinition(beanName, bd);
-	}
-
-	private boolean isBackgroundInit(String beanName) {
-		return ((AbstractBeanDefinition) this.beanFactory.getBeanDefinition(beanName)).isBackgroundInit();
-	}
-
-
-	static class SampleBeanPostProcessor implements BeanPostProcessor {
-	}
-
+    static class SampleBeanPostProcessor implements BeanPostProcessor {}
 }

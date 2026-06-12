@@ -1,6 +1,9 @@
-# Gradle
-.gradle/
+# Maven
+target/
+
+# Gradle (legacy build system)
 build/
+.gradle/
 
 # IDE
 .idea/

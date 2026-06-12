@@ -56,12 +56,23 @@ executor down after refresh.
 The project tracks **Spring Boot 4.1.0**, which manages **Spring Framework 7.0.8**
 (the stable Spring release for that Boot line).
 
-Rather than hard-coding `7.0.8`, `build.gradle` imports the Boot platform BOM:
+Rather than hard-coding `7.0.8`, `pom.xml` imports the Boot platform BOM:
 
-```groovy
-api(platform("org.springframework.boot:spring-boot-dependencies:4.1.0"))
-api('org.springframework:spring-context')   // -> resolves to 7.0.8
+```xml
+<dependencyManagement>
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-dependencies</artifactId>
+            <version>4.1.0</version>
+            <type>pom</type>
+            <scope>import</scope>
+        </dependency>
+    </dependencies>
+</dependencyManagement>
 ```
+
+`spring-context` is then declared without a version and resolves to 7.0.8.
 
 **Why this way:** importing the Boot BOM guarantees that Spring Booster is always
 binary- and version-compatible with the exact Spring (and JSpecify, JUnit, AssertJ)
@@ -229,14 +240,20 @@ high-value next step.
 
 ## 7. Build, test, and release
 
-* **Build system:** Gradle (wrapper pinned; `java-library` + `maven-publish`).
-* **Coordinates:** `io.github.jdubois:spring-booster` (version in `build.gradle`).
-* **Artifacts:** main jar, `-sources.jar`, `-javadoc.jar`, Gradle module metadata
-  and POM. `./gradlew publishToMavenLocal` installs them to `~/.m2`.
-* **Tests:** JUnit Jupiter + AssertJ (versions from the Boot BOM). JUnit 6.x
-  requires `junit-platform-launcher` on the test runtime classpath — it is declared
-  explicitly in `build.gradle` because Gradle 9 does not auto-provision a matching
-  launcher for JUnit Platform 6.
+* **Build system:** Maven (Maven Wrapper pinned to 3.9.16). Standard `jar`
+  packaging.
+* **Coordinates:** `io.github.jdubois:spring-booster` (version in `pom.xml`).
+* **Artifacts:** main jar, `-sources.jar`, `-javadoc.jar` and POM (the source and
+  javadoc jars are attached during `package`). `./mvnw install` installs them to
+  `~/.m2`.
+* **Build JDK:** Java 17. The build must run on a JDK 17 because the Palantir Java
+  Format engine used by Spotless runs under the build JDK.
+* **Code formatting:** Spotless with Palantir Java Format
+  (`./mvnw spotless:apply` to reformat; `spotless:check` is bound to the `verify`
+  phase and fails the build on unformatted code).
+* **Tests:** JUnit Jupiter + AssertJ (versions from the Boot BOM). Maven Surefire
+  provides the JUnit Platform launcher automatically, so no extra launcher
+  dependency is needed.
 * **Test coverage today:** `BeanDependencyGraphTests` (graph/layers/cycles),
   `ParallelBootstrapBeanFactoryPostProcessorTests` (candidate planning, infra
   exclusion, opt-out), and `ParallelBootstrapIntegrationTests` (real context refresh,
@@ -244,6 +261,8 @@ high-value next step.
 
 ### 7.1 Conventions
 
+* Code is formatted with **Spotless + Palantir Java Format** (4-space indent);
+  run `./mvnw spotless:apply` before committing.
 * Apache License 2.0 header on every `.java` file **except** `package-info.java`
   (which carries only the package Javadoc and `@NullMarked`).
 * Null-safety via JSpecify (`@NullMarked` at package level, `@Nullable` on members).
