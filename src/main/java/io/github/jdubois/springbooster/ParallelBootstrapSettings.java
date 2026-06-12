@@ -17,9 +17,7 @@
 package io.github.jdubois.springbooster;
 
 import java.util.function.Predicate;
-
 import org.jspecify.annotations.Nullable;
-
 import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.util.Assert;
 
@@ -38,157 +36,167 @@ import org.springframework.util.Assert;
  */
 public final class ParallelBootstrapSettings {
 
-	/**
-	 * Bean definition attribute that, when set to {@code Boolean.TRUE}, explicitly
-	 * opts a bean out of parallel background initialization.
-	 */
-	public static final String OPT_OUT_ATTRIBUTE = ParallelBootstrapSettings.class.getName() + ".optOut";
+    /**
+     * Bean definition attribute that, when set to {@code Boolean.TRUE}, explicitly
+     * opts a bean out of parallel background initialization.
+     */
+    public static final String OPT_OUT_ATTRIBUTE = ParallelBootstrapSettings.class.getName() + ".optOut";
 
-	private final boolean enabled;
+    private final boolean enabled;
 
-	private final int poolSize;
+    private final int poolSize;
 
-	private final String threadNamePrefix;
+    private final String threadNamePrefix;
 
-	private final Predicate<String> candidateFilter;
+    private final Predicate<String> candidateFilter;
 
+    private ParallelBootstrapSettings(
+            boolean enabled, int poolSize, String threadNamePrefix, Predicate<String> candidateFilter) {
 
-	private ParallelBootstrapSettings(boolean enabled, int poolSize, String threadNamePrefix,
-			Predicate<String> candidateFilter) {
+        this.enabled = enabled;
+        this.poolSize = poolSize;
+        this.threadNamePrefix = threadNamePrefix;
+        this.candidateFilter = candidateFilter;
+    }
 
-		this.enabled = enabled;
-		this.poolSize = poolSize;
-		this.threadNamePrefix = threadNamePrefix;
-		this.candidateFilter = candidateFilter;
-	}
+    /**
+     * Whether parallel bootstrapping is enabled (global kill-switch).
+     * @return whether parallel bootstrapping is enabled
+     */
+    public boolean isEnabled() {
+        return this.enabled;
+    }
 
+    /**
+     * The number of threads in the bounded bootstrap pool.
+     * @return the bootstrap pool size
+     */
+    public int getPoolSize() {
+        return this.poolSize;
+    }
 
-	/**
-	 * Whether parallel bootstrapping is enabled (global kill-switch).
-	 */
-	public boolean isEnabled() {
-		return this.enabled;
-	}
+    /**
+     * The thread name prefix used for bootstrap threads.
+     * @return the thread name prefix
+     */
+    public String getThreadNamePrefix() {
+        return this.threadNamePrefix;
+    }
 
-	/**
-	 * The number of threads in the bounded bootstrap pool.
-	 */
-	public int getPoolSize() {
-		return this.poolSize;
-	}
+    /**
+     * An additional user-supplied filter applied to candidate bean names; a bean is
+     * only eligible for background initialization if this predicate returns
+     * {@code true}. Defaults to accepting every bean.
+     * @return the candidate filter predicate
+     */
+    public Predicate<String> getCandidateFilter() {
+        return this.candidateFilter;
+    }
 
-	/**
-	 * The thread name prefix used for bootstrap threads.
-	 */
-	public String getThreadNamePrefix() {
-		return this.threadNamePrefix;
-	}
+    /**
+     * Create settings with sensible defaults: enabled, a pool size derived from the
+     * number of available processors, the {@code parallel-bootstrap-} thread prefix,
+     * and a candidate filter that accepts every bean.
+     * @return a new settings instance populated with default values
+     */
+    public static ParallelBootstrapSettings withDefaults() {
+        return builder().build();
+    }
 
-	/**
-	 * An additional user-supplied filter applied to candidate bean names; a bean is
-	 * only eligible for background initialization if this predicate returns
-	 * {@code true}. Defaults to accepting every bean.
-	 */
-	public Predicate<String> getCandidateFilter() {
-		return this.candidateFilter;
-	}
+    /**
+     * Create a new {@link Builder} pre-populated with default values.
+     * @return a new builder
+     */
+    public static Builder builder() {
+        return new Builder();
+    }
 
+    /**
+     * Compute the default bootstrap pool size based on the number of available
+     * processors, with a floor of {@code 2} so that at least some parallelism is
+     * available on single-core environments.
+     * @return the default bootstrap pool size
+     */
+    public static int defaultPoolSize() {
+        return Math.max(2, Runtime.getRuntime().availableProcessors());
+    }
 
-	/**
-	 * Create settings with sensible defaults: enabled, a pool size derived from the
-	 * number of available processors, the {@code parallel-bootstrap-} thread prefix,
-	 * and a candidate filter that accepts every bean.
-	 */
-	public static ParallelBootstrapSettings withDefaults() {
-		return builder().build();
-	}
+    /**
+     * Determine whether the given bean definition has explicitly opted out of
+     * parallel background initialization via {@link #OPT_OUT_ATTRIBUTE}.
+     */
+    static boolean isOptedOut(@Nullable BeanDefinition beanDefinition) {
+        return (beanDefinition != null && Boolean.TRUE.equals(beanDefinition.getAttribute(OPT_OUT_ATTRIBUTE)));
+    }
 
-	/**
-	 * Create a new {@link Builder} pre-populated with default values.
-	 */
-	public static Builder builder() {
-		return new Builder();
-	}
+    /**
+     * Builder for {@link ParallelBootstrapSettings}.
+     */
+    public static final class Builder {
 
-	/**
-	 * Compute the default bootstrap pool size based on the number of available
-	 * processors, with a floor of {@code 2} so that at least some parallelism is
-	 * available on single-core environments.
-	 */
-	public static int defaultPoolSize() {
-		return Math.max(2, Runtime.getRuntime().availableProcessors());
-	}
+        private boolean enabled = true;
 
-	/**
-	 * Determine whether the given bean definition has explicitly opted out of
-	 * parallel background initialization via {@link #OPT_OUT_ATTRIBUTE}.
-	 */
-	static boolean isOptedOut(@Nullable BeanDefinition beanDefinition) {
-		return (beanDefinition != null && Boolean.TRUE.equals(beanDefinition.getAttribute(OPT_OUT_ATTRIBUTE)));
-	}
+        private int poolSize = defaultPoolSize();
 
+        private String threadNamePrefix = "parallel-bootstrap-";
 
-	/**
-	 * Builder for {@link ParallelBootstrapSettings}.
-	 */
-	public static final class Builder {
+        private Predicate<String> candidateFilter = beanName -> true;
 
-		private boolean enabled = true;
+        private Builder() {}
 
-		private int poolSize = defaultPoolSize();
+        /**
+         * Set the global kill-switch. When {@code false}, the post-processor performs
+         * no work and the context bootstraps sequentially.
+         * @param enabled whether parallel bootstrapping is enabled
+         * @return this builder
+         */
+        public Builder enabled(boolean enabled) {
+            this.enabled = enabled;
+            return this;
+        }
 
-		private String threadNamePrefix = "parallel-bootstrap-";
+        /**
+         * Set the bounded bootstrap pool size. Must be a positive number.
+         * @param poolSize the number of threads in the bootstrap pool (must be positive)
+         * @return this builder
+         */
+        public Builder poolSize(int poolSize) {
+            Assert.isTrue(poolSize > 0, "'poolSize' must be positive");
+            this.poolSize = poolSize;
+            return this;
+        }
 
-		private Predicate<String> candidateFilter = beanName -> true;
+        /**
+         * Set the thread name prefix for bootstrap threads.
+         * @param threadNamePrefix the thread name prefix (must not be empty)
+         * @return this builder
+         */
+        public Builder threadNamePrefix(String threadNamePrefix) {
+            Assert.hasText(threadNamePrefix, "'threadNamePrefix' must not be empty");
+            this.threadNamePrefix = threadNamePrefix;
+            return this;
+        }
 
-		private Builder() {
-		}
+        /**
+         * Set an additional candidate filter by bean name. Beans for which the
+         * predicate returns {@code false} are never marked for background
+         * initialization, regardless of the built-in safety checks.
+         * @param candidateFilter the candidate filter predicate (must not be null)
+         * @return this builder
+         */
+        public Builder candidateFilter(Predicate<String> candidateFilter) {
+            Assert.notNull(candidateFilter, "'candidateFilter' must not be null");
+            this.candidateFilter = candidateFilter;
+            return this;
+        }
 
-		/**
-		 * Set the global kill-switch. When {@code false}, the post-processor performs
-		 * no work and the context bootstraps sequentially.
-		 */
-		public Builder enabled(boolean enabled) {
-			this.enabled = enabled;
-			return this;
-		}
-
-		/**
-		 * Set the bounded bootstrap pool size. Must be a positive number.
-		 */
-		public Builder poolSize(int poolSize) {
-			Assert.isTrue(poolSize > 0, "'poolSize' must be positive");
-			this.poolSize = poolSize;
-			return this;
-		}
-
-		/**
-		 * Set the thread name prefix for bootstrap threads.
-		 */
-		public Builder threadNamePrefix(String threadNamePrefix) {
-			Assert.hasText(threadNamePrefix, "'threadNamePrefix' must not be empty");
-			this.threadNamePrefix = threadNamePrefix;
-			return this;
-		}
-
-		/**
-		 * Set an additional candidate filter by bean name. Beans for which the
-		 * predicate returns {@code false} are never marked for background
-		 * initialization, regardless of the built-in safety checks.
-		 */
-		public Builder candidateFilter(Predicate<String> candidateFilter) {
-			Assert.notNull(candidateFilter, "'candidateFilter' must not be null");
-			this.candidateFilter = candidateFilter;
-			return this;
-		}
-
-		/**
-		 * Build the immutable {@link ParallelBootstrapSettings} instance.
-		 */
-		public ParallelBootstrapSettings build() {
-			return new ParallelBootstrapSettings(this.enabled, this.poolSize,
-					this.threadNamePrefix, this.candidateFilter);
-		}
-	}
-
+        /**
+         * Build the immutable {@link ParallelBootstrapSettings} instance.
+         * @return the immutable settings instance
+         */
+        public ParallelBootstrapSettings build() {
+            return new ParallelBootstrapSettings(
+                    this.enabled, this.poolSize, this.threadNamePrefix, this.candidateFilter);
+        }
+    }
 }

@@ -20,8 +20,8 @@ degrades gracefully to the normal sequential bootstrap.
 - Single Java package: `io.github.jdubois.springbooster`
   (`src/main/java/io/github/jdubois/springbooster/`).
 - Tests mirror that package under `src/test/java/...`.
-- Gradle build: `build.gradle` (module config) + `settings.gradle`
-  (project name + Foojay toolchain resolver).
+- Maven build: `pom.xml`. The Maven Wrapper (`./mvnw`, pinned to Maven 3.9.16) is
+  committed, so no local Maven install is needed.
 - `README.md` — user-facing usage and install instructions.
 - `SPECIFICATION.md` — the authoritative "what/why/how" design document.
 
@@ -37,46 +37,40 @@ degrades gracefully to the normal sequential bootstrap.
 
 ## Build, test, and publish
 
-This project targets a **Java 17 toolchain** (Spring Framework 7 / Spring Boot 4
-baseline). You do **not** need Java 17 as your default JDK — `settings.gradle`
-applies the Foojay toolchain resolver, so Gradle auto-downloads a matching JDK 17
-if none is detected locally. Always use the bundled wrapper (`./gradlew`).
+Build with **Maven** via the committed wrapper (`./mvnw`); no local Maven install
+is required. **Use a Java 17 JDK to build** (Spring Framework 7 / Spring Boot 4
+baseline): the Palantir Java Format engine used by Spotless runs under the build
+JDK, so set `JAVA_HOME` to a JDK 17 before building.
 
 ```bash
-./gradlew build              # compile + javadoc + assemble jars + run tests
-./gradlew test               # run the JUnit Jupiter test suite only
-./gradlew assemble           # build artifacts without running tests
-./gradlew publishToMavenLocal # install jar/sources/javadoc/POM into ~/.m2
+./mvnw verify          # compile + test + assemble jars + spotless:check
+./mvnw test            # compile + run the JUnit Jupiter test suite only
+./mvnw spotless:apply  # reformat all code (Spotless + Palantir Java Format)
+./mvnw install         # install jar/sources/javadoc/POM into ~/.m2
 ```
 
-If a local JDK 17 exists but is not auto-detected, point Gradle at it:
-
-```bash
-./gradlew build -Dorg.gradle.java.installations.paths=/path/to/jdk-17
-```
-
-Expectation when your change is complete: `./gradlew build` is GREEN and all
-tests pass (currently `BeanDependencyGraphTests`,
-`ParallelBootstrapBeanFactoryPostProcessorTests`,
-`ParallelBootstrapIntegrationTests`). The Javadoc step emits a few `no @param /
-no @return` warnings on `Builder` methods — these are pre-existing and not
-failures.
+Expectation when your change is complete: `./mvnw verify` is GREEN — all 25 tests
+pass (`BeanDependencyGraphTests`, `ParallelBootstrapBeanFactoryPostProcessorTests`,
+`ParallelBootstrapIntegrationTests`) **and** `spotless:check` passes. If the
+formatting check fails, run `./mvnw spotless:apply` and re-run.
 
 ## Dependency / version policy
 
 - Do **not** hard-code the Spring Framework version. The build imports the
-  `org.springframework.boot:spring-boot-dependencies` BOM (see `springBootBomVersion`
-  in `build.gradle`); all Spring/JSpecify/JUnit/AssertJ versions come from it.
+  `org.springframework.boot:spring-boot-dependencies` BOM (see the
+  `spring-boot.version` property in `pom.xml`); all Spring/JSpecify/JUnit/AssertJ
+  versions come from it.
 - To move to a newer Spring baseline, bump the **single** BOM coordinate.
 - The only runtime dependencies are `spring-context` and JSpecify annotations.
 
 ## Conventions (follow these in any change)
 
+- Code is formatted with **Spotless + Palantir Java Format** (4-space indent).
+  Run `./mvnw spotless:apply` before committing; never hand-format against it.
 - **Apache License 2.0 header** on every `.java` file **except**
   `package-info.java` (which carries only package Javadoc + `@NullMarked`).
 - Null-safety via **JSpecify**: `@NullMarked` at package level, `@Nullable` on
   nullable members.
-- Indentation is **tabs** (match the surrounding files and `build.gradle`).
 - Keep the public surface minimal: `EnableParallelBootstrap`,
   `ParallelBootstrapApplicationContextInitializer`, `ParallelBootstrapSettings`,
   `ParallelBootstrapBeanFactoryPostProcessor`.
