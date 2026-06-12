@@ -1,1 +1,7 @@
+plugins {
+	// Lets Gradle automatically download a matching JDK (Java 17) when no
+	// suitable toolchain is found locally, so `./gradlew build` works out of the box.
+	id 'org.gradle.toolchains.foojay-resolver-convention' version '1.0.0'
+}
+
 rootProject.name = "spring-booster"

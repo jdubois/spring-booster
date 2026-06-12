@@ -116,6 +116,21 @@ always match exactly what Spring Boot 4.1.0 ships. Bumping the Boot line in
 This compiles the code, runs Checkstyle-free JavaDoc, assembles the `jar`,
 `-sources.jar` and `-javadoc.jar`, and runs the test suite.
 
+The build uses a **Java 17 toolchain** (see [Requirements](#requirements)).
+You do not need Java 17 to be your default JDK: the Gradle wrapper is bundled,
+and the [Foojay toolchains resolver](https://github.com/gradle/foojay-toolchains)
+configured in `settings.gradle` lets Gradle **automatically download a matching
+JDK 17** if one is not already installed locally. As a result, a clean
+`./gradlew build` works out of the box on any machine with internet access,
+regardless of which JDK is on the `PATH`.
+
+If you prefer to use a JDK 17 that is already installed but not auto-detected,
+point Gradle at it explicitly:
+
+```bash
+./gradlew build -Dorg.gradle.java.installations.paths=/path/to/jdk-17
+```
+
 To assemble the artifacts without running the tests:
 
 ```bash
