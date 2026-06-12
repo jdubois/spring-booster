@@ -183,6 +183,11 @@ dependencies {
 </dependency>
 ```
 
+## Contributing
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for how to set
+up a development environment, build with Maven, and submit changes.
+
 ## License
 
 Licensed under the [Apache License, Version 2.0](LICENSE).
