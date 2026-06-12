@@ -33,9 +33,9 @@ if anything goes wrong.
 * Identifies **independent "leaf" beans** that are safe to create concurrently
   (excluding beans in dependency cycles, shared factory beans, framework
   infrastructure beans such as `BeanPostProcessor`s, and anything you opt out).
-* Marks those beans for background initialization and installs a **bounded,
-  CPU-sized bootstrap thread pool** that the bean factory uses during
-  `preInstantiateSingletons()`.
+* Marks those beans for background initialization and installs a **bounded
+  bootstrap thread pool** (sized by default at twice the available processor
+  count) that the bean factory uses during `preInstantiateSingletons()`.
 * **Shuts the pool down** automatically once the context has refreshed, so it does
   not linger for the lifetime of the application.
 * Falls back to the **normal sequential bootstrap** whenever the feature is

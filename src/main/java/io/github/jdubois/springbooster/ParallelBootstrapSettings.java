@@ -94,7 +94,7 @@ public final class ParallelBootstrapSettings {
     }
 
     /**
-     * Create settings with sensible defaults: enabled, a pool size derived from the
+     * Create settings with sensible defaults: enabled, a pool size of twice the
      * number of available processors, the {@code parallel-bootstrap-} thread prefix,
      * and a candidate filter that accepts every bean.
      * @return a new settings instance populated with default values
@@ -112,13 +112,18 @@ public final class ParallelBootstrapSettings {
     }
 
     /**
-     * Compute the default bootstrap pool size based on the number of available
+     * Compute the default bootstrap pool size as twice the number of available
      * processors, with a floor of {@code 2} so that at least some parallelism is
      * available on single-core environments.
+     * <p>Bean bootstrap is frequently I/O- or blocking-bound (opening connection
+     * pools, warming caches, establishing remote clients), so the pool is
+     * deliberately oversized relative to the CPU count to keep cores busy while
+     * other threads wait. Workloads that are purely CPU-bound, or that block for
+     * unusually long, may benefit from tuning {@code poolSize} explicitly.
      * @return the default bootstrap pool size
      */
     public static int defaultPoolSize() {
-        return Math.max(2, Runtime.getRuntime().availableProcessors());
+        return Math.max(2, Runtime.getRuntime().availableProcessors() * 2);
     }
 
     /**

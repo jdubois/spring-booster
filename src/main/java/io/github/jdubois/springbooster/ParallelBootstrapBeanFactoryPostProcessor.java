@@ -58,7 +58,8 @@ import org.springframework.util.Assert;
  * dependency cycles, and beans that have opted out;</li>
  * <li>it marks each candidate for background initialization via
  * {@link AbstractBeanDefinition#setBackgroundInit(boolean)};</li>
- * <li>it installs a bounded, CPU-sized {@link Executor} as the factory's bootstrap
+ * <li>it installs a bounded {@link Executor} (sized by default at twice the
+ * available processor count) as the factory's bootstrap
  * executor.</li>
  * </ol>
  *
