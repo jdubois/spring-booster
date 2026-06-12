@@ -160,19 +160,6 @@ javadoc and POM) into `~/.m2` so other local projects can depend on it.
 
 ### Consume it
 
-**Gradle**
-
-```groovy
-repositories {
-    mavenLocal()
-    mavenCentral()
-}
-
-dependencies {
-    implementation 'io.github.jdubois:spring-booster:0.1.0-SNAPSHOT'
-}
-```
-
 **Maven**
 
 ```xml
