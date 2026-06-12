@@ -1,0 +1,71 @@
+plugins {
+	id 'java-library'
+	id 'maven-publish'
+}
+
+group = 'io.github.jdubois'
+version = '0.1.0-SNAPSHOT'
+description = 'Spring Booster - opt-in parallel bean instantiation for Spring application context bootstrap'
+
+// The Spring Framework version (and the versions of all other libraries below) is
+// inherited from the Spring Boot 4.1.0 dependency BOM, so this project always tracks
+// exactly the stable Spring Framework release used by Spring Boot 4.1.0 (7.0.8).
+ext {
+	springBootBomVersion = '4.1.0'
+}
+
+java {
+	// Spring Framework 7.x / Spring Boot 4.x baseline.
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(17)
+	}
+	withJavadocJar()
+	withSourcesJar()
+}
+
+repositories {
+	mavenCentral()
+}
+
+dependencies {
+	// Align every dependency with the versions shipped by Spring Boot 4.1.0.
+	api(platform("org.springframework.boot:spring-boot-dependencies:${springBootBomVersion}"))
+
+	// Core compile dependency: spring-context pulls in spring-beans, spring-core,
+	// spring-aop and spring-jcl transitively (all at the Boot-managed version).
+	api('org.springframework:spring-context')
+
+	// JSpecify nullness annotations (used for @NullMarked / @Nullable).
+	api('org.jspecify:jspecify')
+
+	testImplementation('org.junit.jupiter:junit-jupiter')
+	testImplementation('org.assertj:assertj-core')
+	testRuntimeOnly('org.junit.platform:junit-platform-launcher')
+}
+
+tasks.named('test') {
+	useJUnitPlatform()
+}
+
+tasks.withType(JavaCompile).configureEach {
+	options.encoding = 'UTF-8'
+	options.compilerArgs << '-parameters'
+}
+
+publishing {
+	publications {
+		mavenJava(MavenPublication) {
+			from components.java
+			pom {
+				name = 'Spring Booster'
+				description = project.description
+				licenses {
+					license {
+						name = 'Apache License, Version 2.0'
+						url = 'https://www.apache.org/licenses/LICENSE-2.0'
+					}
+				}
+			}
+		}
+	}
+}
