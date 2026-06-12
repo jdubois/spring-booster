@@ -50,13 +50,20 @@ public final class ParallelBootstrapSettings {
 
     private final Predicate<String> candidateFilter;
 
+    private final boolean backgroundFactoryMethodBeans;
+
     private ParallelBootstrapSettings(
-            boolean enabled, int poolSize, String threadNamePrefix, Predicate<String> candidateFilter) {
+            boolean enabled,
+            int poolSize,
+            String threadNamePrefix,
+            Predicate<String> candidateFilter,
+            boolean backgroundFactoryMethodBeans) {
 
         this.enabled = enabled;
         this.poolSize = poolSize;
         this.threadNamePrefix = threadNamePrefix;
         this.candidateFilter = candidateFilter;
+        this.backgroundFactoryMethodBeans = backgroundFactoryMethodBeans;
     }
 
     /**
@@ -91,6 +98,30 @@ public final class ParallelBootstrapSettings {
      */
     public Predicate<String> getCandidateFilter() {
         return this.candidateFilter;
+    }
+
+    /**
+     * Whether beans produced by {@code @Bean} factory methods are eligible for
+     * background initialization.
+     * <p>Defaults to {@code false}. Configuration classes are always created on the
+     * main thread and are the primary site of dynamic, by-type bean access during
+     * context refresh (captured {@code ApplicationContext}/{@code BeanFactory} lookups,
+     * {@code ObjectProvider}/{@code Lazy} resolution from framework callbacks, CGLIB
+     * {@code @Bean} self-invocation). Such access is invisible to static injection-point
+     * analysis, so by default every factory-method bean is co-located with its
+     * configuration class on the main thread, which keeps accept-all bootstrapping safe
+     * on fully auto-configured Spring Boot applications. Only component-scanned beans and
+     * beans registered as plain definitions are backgrounded.
+     * <p>Set to {@code true} to also background factory-method beans (subject to the
+     * remaining structural and connectivity safety checks). This maximizes parallelism
+     * but reintroduces the risk of {@code BeanCurrentlyInCreationException} when a
+     * main-thread bean pulls a backgrounded {@code @Bean} bean by type through a call the
+     * analysis cannot see; pair it with a {@link #getCandidateFilter() candidate filter}
+     * scoped to beans known to be safe.
+     * @return whether factory-method beans may be backgrounded
+     */
+    public boolean isBackgroundFactoryMethodBeans() {
+        return this.backgroundFactoryMethodBeans;
     }
 
     /**
@@ -147,6 +178,8 @@ public final class ParallelBootstrapSettings {
 
         private Predicate<String> candidateFilter = beanName -> true;
 
+        private boolean backgroundFactoryMethodBeans = false;
+
         private Builder() {}
 
         /**
@@ -196,12 +229,31 @@ public final class ParallelBootstrapSettings {
         }
 
         /**
+         * Set whether beans produced by {@code @Bean} factory methods may be
+         * backgrounded. Defaults to {@code false}, which co-locates every factory-method
+         * bean with its (always main-thread) configuration class so that accept-all
+         * bootstrapping stays safe. Set to {@code true} to maximize parallelism at the
+         * cost of reintroducing the invisible by-type pull risk for {@code @Bean} beans.
+         * @param backgroundFactoryMethodBeans whether factory-method beans may be backgrounded
+         * @return this builder
+         * @see ParallelBootstrapSettings#isBackgroundFactoryMethodBeans()
+         */
+        public Builder backgroundFactoryMethodBeans(boolean backgroundFactoryMethodBeans) {
+            this.backgroundFactoryMethodBeans = backgroundFactoryMethodBeans;
+            return this;
+        }
+
+        /**
          * Build the immutable {@link ParallelBootstrapSettings} instance.
          * @return the immutable settings instance
          */
         public ParallelBootstrapSettings build() {
             return new ParallelBootstrapSettings(
-                    this.enabled, this.poolSize, this.threadNamePrefix, this.candidateFilter);
+                    this.enabled,
+                    this.poolSize,
+                    this.threadNamePrefix,
+                    this.candidateFilter,
+                    this.backgroundFactoryMethodBeans);
         }
     }
 }

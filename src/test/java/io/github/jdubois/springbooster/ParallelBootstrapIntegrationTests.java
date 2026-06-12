@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.support.RootBeanDefinition;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -67,7 +68,10 @@ class ParallelBootstrapIntegrationTests {
     void programmaticInitializerEnablesParallelBootstrap() {
         RecordingConfig.creationThreads.clear();
         try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
-            new ParallelBootstrapApplicationContextInitializer().initialize(context);
+            ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                    .backgroundFactoryMethodBeans(true)
+                    .build();
+            new ParallelBootstrapApplicationContextInitializer(settings).initialize(context);
             context.register(PlainRecordingConfig.class);
             context.refresh();
             assertThat(RecordingConfig.creationThreads).anyMatch(name -> name.startsWith("parallel-bootstrap-"));
@@ -82,6 +86,59 @@ class ParallelBootstrapIntegrationTests {
                 new AnnotationConfigApplicationContext(DisabledConfig.class)) {
             assertThat(context.getBean(ServiceA.class)).isNotNull();
             assertThat(RecordingConfig.creationThreads).noneMatch(name -> name.startsWith("parallel-bootstrap-"));
+        }
+    }
+
+    @Test
+    void mainThreadByTypeConsumerDoesNotTriggerBackgroundCreationException() {
+        RecordingConfig.creationThreads.clear();
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            context.register(ByTypeConsumerConfig.class);
+            // Force "consumer" onto the main thread; it injects "leaf" by type. Before
+            // by-type edges were modelled, "leaf" was backgrounded and this refresh
+            // failed with BeanCurrentlyInCreationException. "independent" has no
+            // dependents and is still parallelized.
+            ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                    .poolSize(4)
+                    .backgroundFactoryMethodBeans(true)
+                    .candidateFilter(name -> name.equals("leaf") || name.equals("independent"))
+                    .build();
+            context.addBeanFactoryPostProcessor(new ParallelBootstrapBeanFactoryPostProcessor(settings));
+            context.refresh();
+
+            assertThat(context.getBean(Leaf.class)).isNotNull();
+            assertThat(RecordingConfig.creationThreads).anyMatch(name -> name.startsWith("parallel-bootstrap-"));
+        }
+    }
+
+    @Test
+    void factoryMethodBeansAreKeptMainlineByDefault() {
+        RecordingConfig.creationThreads.clear();
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            // Default settings: factory-method beans are co-located with their
+            // configuration class, so none of the @Bean beans is backgrounded.
+            new ParallelBootstrapApplicationContextInitializer().initialize(context);
+            context.register(PlainRecordingConfig.class);
+            context.refresh();
+            assertThat(context.getBeansOfType(RecordingBean.class)).hasSize(4);
+            assertThat(RecordingConfig.creationThreads).noneMatch(name -> name.startsWith("parallel-bootstrap-"));
+        }
+    }
+
+    @Test
+    void componentBeansAreBackgroundedWithDefaultSettings() {
+        ComponentRecordingBean.creationThreads.clear();
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            // Default settings still background beans that are not produced by a @Bean
+            // factory method (here, plain root bean definitions standing in for
+            // component-scanned beans).
+            new ParallelBootstrapApplicationContextInitializer().initialize(context);
+            for (int i = 0; i < 4; i++) {
+                context.registerBeanDefinition("component" + i, new RootBeanDefinition(ComponentRecordingBean.class));
+            }
+            context.refresh();
+            assertThat(context.getBeansOfType(ComponentRecordingBean.class)).hasSize(4);
+            assertThat(ComponentRecordingBean.creationThreads).anyMatch(name -> name.startsWith("parallel-bootstrap-"));
         }
     }
 
@@ -106,7 +163,7 @@ class ParallelBootstrapIntegrationTests {
     }
 
     @Configuration(proxyBeanMethods = false)
-    @EnableParallelBootstrap(poolSize = 4)
+    @EnableParallelBootstrap(poolSize = 4, backgroundFactoryMethodBeans = true)
     static class RecordingConfig {
 
         static final Set<String> creationThreads = ConcurrentHashMap.newKeySet();
@@ -167,6 +224,36 @@ class ParallelBootstrapIntegrationTests {
         }
     }
 
+    @Configuration(proxyBeanMethods = false)
+    static class ByTypeConsumerConfig {
+
+        // Declared before "leaf" on purpose: the main thread instantiates "consumer"
+        // and resolves "leaf" by type before "leaf" has been submitted for background
+        // creation, which is exactly the situation that used to throw
+        // BeanCurrentlyInCreationException when "leaf" was wrongly backgrounded.
+        @Bean
+        ByTypeConsumer consumer(Leaf leaf) {
+            return new ByTypeConsumer(leaf);
+        }
+
+        @Bean
+        Leaf leaf() {
+            return new Leaf();
+        }
+
+        @Bean
+        RecordingBean independent() {
+            return new RecordingBean(RecordingConfig.creationThreads);
+        }
+    }
+
+    static class Leaf {}
+
+    static class ByTypeConsumer {
+
+        ByTypeConsumer(Leaf leaf) {}
+    }
+
     static class ServiceA {}
 
     static class ServiceB {}
@@ -194,6 +281,15 @@ class ParallelBootstrapIntegrationTests {
     static class RecordingBean {
 
         RecordingBean(Set<String> creationThreads) {
+            creationThreads.add(Thread.currentThread().getName());
+        }
+    }
+
+    static class ComponentRecordingBean {
+
+        static final Set<String> creationThreads = ConcurrentHashMap.newKeySet();
+
+        ComponentRecordingBean() {
             creationThreads.add(Thread.currentThread().getName());
         }
     }

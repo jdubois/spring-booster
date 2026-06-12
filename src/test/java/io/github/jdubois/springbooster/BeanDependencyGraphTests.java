@@ -22,6 +22,8 @@ import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.MutablePropertyValues;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.config.ConstructorArgumentValues;
 import org.springframework.beans.factory.config.RuntimeBeanReference;
 import org.springframework.beans.factory.support.DefaultListableBeanFactory;
@@ -157,6 +159,89 @@ class BeanDependencyGraphTests {
         assertThat(build("a", "b").beansInCycles()).isEmpty();
     }
 
+    @Test
+    void byTypeConstructorAutowiringProducesEdge() {
+        register("leaf", Leaf.class);
+        register("consumer", ConstructorConsumer.class);
+
+        BeanDependencyGraph graph = build("leaf", "consumer");
+
+        assertThat(graph.getDependencies("consumer")).contains("leaf");
+        assertThat(graph.getSyncDependencies("consumer")).contains("leaf");
+    }
+
+    @Test
+    void autowiredFieldProducesEdge() {
+        register("leaf", Leaf.class);
+        register("consumer", FieldConsumer.class);
+
+        assertThat(build("leaf", "consumer").getSyncDependencies("consumer")).contains("leaf");
+    }
+
+    @Test
+    void objectProviderInjectionProducesEdge() {
+        register("leaf", Leaf.class);
+        register("consumer", ProviderConsumer.class);
+
+        assertThat(build("leaf", "consumer").getSyncDependencies("consumer")).contains("leaf");
+    }
+
+    @Test
+    void collectionInjectionProducesEdge() {
+        register("leaf", Leaf.class);
+        register("consumer", CollectionConsumer.class);
+
+        assertThat(build("leaf", "consumer").getSyncDependencies("consumer")).contains("leaf");
+    }
+
+    @Test
+    void dependsOnIsNotASyncEdge() {
+        register("a", Leaf.class);
+        RootBeanDefinition b = new RootBeanDefinition(Leaf.class);
+        b.setDependsOn("a");
+        this.beanFactory.registerBeanDefinition("b", b);
+
+        BeanDependencyGraph graph = build("a", "b");
+
+        assertThat(graph.getDependencies("b")).contains("a");
+        assertThat(graph.getSyncDependencies("b")).doesNotContain("a");
+    }
+
+    @Test
+    void factoryMethodBeanIsColocatedWithConfigurationByDefault() {
+        register("config", FactoryConfig.class);
+        RootBeanDefinition product = new RootBeanDefinition();
+        product.setFactoryBeanName("config");
+        product.setFactoryMethodName("product");
+        this.beanFactory.registerBeanDefinition("product", product);
+
+        BeanDependencyGraph graph = BeanDependencyGraph.build(this.beanFactory, List.of("config", "product"), true);
+
+        // The configuration gains a co-location sync edge to its @Bean product, so the
+        // planner keeps the product on the configuration's (main) thread.
+        assertThat(graph.getSyncDependencies("config")).contains("product");
+        // The genuine construction dependency still runs in the opposite direction.
+        assertThat(graph.getDependencies("product")).contains("config");
+    }
+
+    @Test
+    void factoryMethodColocationCanBeDisabled() {
+        register("config", FactoryConfig.class);
+        RootBeanDefinition product = new RootBeanDefinition();
+        product.setFactoryBeanName("config");
+        product.setFactoryMethodName("product");
+        this.beanFactory.registerBeanDefinition("product", product);
+
+        BeanDependencyGraph graph = BeanDependencyGraph.build(this.beanFactory, List.of("config", "product"), false);
+
+        assertThat(graph.getSyncDependencies("config")).doesNotContain("product");
+        assertThat(graph.getDependencies("product")).contains("config");
+    }
+
+    private void register(String beanName, Class<?> type) {
+        this.beanFactory.registerBeanDefinition(beanName, new RootBeanDefinition(type));
+    }
+
     private void registerWithConstructorRefs(String beanName, String... refs) {
         RootBeanDefinition bd = new RootBeanDefinition(Object.class);
         ConstructorArgumentValues cav = new ConstructorArgumentValues();
@@ -169,5 +254,36 @@ class BeanDependencyGraphTests {
 
     private BeanDependencyGraph build(String... beanNames) {
         return BeanDependencyGraph.build(this.beanFactory, List.of(beanNames));
+    }
+
+    static class Leaf {}
+
+    static class FactoryConfig {
+
+        Leaf product() {
+            return new Leaf();
+        }
+    }
+
+    static class ConstructorConsumer {
+        ConstructorConsumer(Leaf leaf) {}
+    }
+
+    static class FieldConsumer {
+
+        @Autowired
+        Leaf leaf;
+    }
+
+    static class ProviderConsumer {
+
+        @Autowired
+        ObjectProvider<Leaf> leaf;
+    }
+
+    static class CollectionConsumer {
+
+        @Autowired
+        List<Leaf> leaves;
     }
 }

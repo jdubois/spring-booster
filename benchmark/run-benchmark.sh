@@ -6,8 +6,9 @@
 # It runs the very same application jar twice:
 #   * baseline — sequential bootstrap (Spring Booster inactive)
 #   * boosted  — parallel bootstrap (--spring.profiles.active=boost), which
-#                activates io.github.jdubois:spring-booster restricted to
-#                Petclinic's own dependency-free beans.
+#                activates io.github.jdubois:spring-booster with the accept-all
+#                default (factory-method @Bean beans are kept on the main thread,
+#                so the analysis backgrounds Petclinic's component beans).
 #
 # Each variant is measured RUNS times (default 5), preceded by one discarded
 # warm-up run per variant to stabilise the OS file cache. The reported startup

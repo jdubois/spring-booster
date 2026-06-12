@@ -30,9 +30,10 @@ degrades gracefully to the normal sequential bootstrap.
 | `EnableParallelBootstrap` | Public opt-in annotation; `@Import`s the registrar. |
 | `ParallelBootstrapRegistrar` | Registers the post-processor from annotation attributes. |
 | `ParallelBootstrapApplicationContextInitializer` | Programmatic / `spring.factories` entry point. |
-| `ParallelBootstrapSettings` | Immutable config (pool size, prefix, kill-switch, `candidateFilter`); fluent `Builder`. |
-| `BeanDependencyGraph` | Pure static dependency graph: Kahn layering + Tarjan cycle detection. Never instantiates beans. |
-| `ParallelBootstrapBeanFactoryPostProcessor` | The engine: plans candidates, marks them, installs/tears down the executor. |
+| `ParallelBootstrapSettings` | Immutable config (pool size, prefix, kill-switch, `candidateFilter`, `backgroundFactoryMethodBeans`); fluent `Builder`. |
+| `BeanDependencyGraph` | Dependency graph over the bean definitions: declared **and** by-type autowiring edges, classified forced vs sync. Kahn layering + Tarjan cycle detection. Never instantiates beans. |
+| `AutowiredEdgeResolver` | Reflectively resolves by-type / `@Autowired` / `ObjectProvider` edges (no bean instantiation). |
+| `ParallelBootstrapBeanFactoryPostProcessor` | The engine: connectivity-safe candidate planning, marks them, installs/tears down the executor. |
 | `package-info.java` | `@NullMarked` package declaration + overview. |
 
 ## Build, test, and publish
@@ -49,7 +50,7 @@ JDK, so set `JAVA_HOME` to a JDK 17 before building.
 ./mvnw install         # install jar/sources/javadoc/POM into ~/.m2
 ```
 
-Expectation when your change is complete: `./mvnw verify` is GREEN — all 25 tests
+Expectation when your change is complete: `./mvnw verify` is GREEN — all 34 tests
 pass (`BeanDependencyGraphTests`, `ParallelBootstrapBeanFactoryPostProcessorTests`,
 `ParallelBootstrapIntegrationTests`) **and** `spotless:check` passes. If the
 formatting check fails, run `./mvnw spotless:apply` and re-run.
@@ -86,18 +87,39 @@ formatting check fails, run `./mvnw spotless:apply` and re-run.
 4. `BeanDependencyGraph` performs **pure analysis** and must never trigger bean
    creation.
 
-## Critical known limitation (read before touching candidate selection)
+## Candidate selection — by-type autowiring is modelled and made safe
 
-The static dependency graph only models **explicit** bean references
-(`depends-on`, factory-bean refs, constructor/property `BeanReference`s). It is
-**blind to by-type / `@Autowired` / `ObjectProvider` autowiring**. With the
-default permissive `candidateFilter`, this makes the library **unsafe to enable
-wholesale on a typical Spring Boot app** (e.g. it triggered a
-`BeanCurrentlyInCreationException` in Spring Petclinic). Current mitigation is
-operational: restrict candidates with `candidateFilter` or opt beans out via
-`ParallelBootstrapSettings.OPT_OUT_ATTRIBUTE`. See **§5 of SPECIFICATION.md**
-for the full analysis and the open design space for a real fix — this is the
-highest-value area for future work.
+`BeanDependencyGraph` models **both** declared references (`depends-on`, factory-bean
+refs, constructor/property `BeanReference`s) **and** by-type / `@Autowired` /
+`ObjectProvider` autowiring edges (resolved reflectively by `AutowiredEdgeResolver`,
+without instantiating beans). Edges are classified **forced** (`depends-on`,
+factory-bean — eagerly created on the main thread) vs **sync** (everything else —
+resolved on the bean's own thread).
+
+`planCandidates` is **connectivity-safe**: it seeds the main-thread set with every
+structurally-ineligible bean (infra, cyclic, factory beans, `depends-on` targets,
+opted-out, filtered-out, lazy/non-singleton) and propagates that across **sync** edges
+to a fixpoint. A bean is backgrounded only when no sync edge connects it — in either
+direction — to a main-thread bean. This makes parallelization safe for every
+dependency that is *visible* in the graph. On top of this, `BeanDependencyGraph.build`
+adds **factory→bean co-location sync edges** by default, so every `@Bean` factory-method
+bean stays on its (always main-thread) `@Configuration` class's thread. See **§5 of
+SPECIFICATION.md** for the correctness argument.
+
+When touching selection: keep the forced-vs-sync edge classification intact and never
+weaken the propagation. **Why factory co-location matters:** configuration classes are
+the main source of dynamic, by-type lookups that no static analysis can see — a captured
+`ApplicationContext`/`BeanFactory`, an `ObjectProvider`/`Lazy` resolved from a framework
+callback, or CGLIB `@Bean` self-invocation (e.g. Spring Data's
+`SpringDataWebConfiguration` pulls `sortResolver` *and* `sortCustomizer` by type from its
+`addArgumentResolvers` callback on the main thread). Keeping `@Bean` beans on the main
+thread closes that whole channel and makes the **default accept-all `candidateFilter`
+safe** on a fully auto-configured Spring Boot web app (verified on the `benchmark/`
+Petclinic harness, which now uses accept-all). The `backgroundFactoryMethodBeans`
+setting disables co-location for users who want to background `@Bean` beans too;
+`candidateFilter` and `OPT_OUT_ATTRIBUTE` are the levers to narrow the set. **Residual
+blind spot:** a *non*-factory-method bean pulled by type via a direct `getBean(...)`
+from another bean's init code — rare, app-specific, and fails fast rather than silently.
 
 ## When in doubt
 

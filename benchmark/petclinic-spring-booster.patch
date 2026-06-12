@@ -36,63 +36,20 @@ index fa06309..a643217 100644
  }
 diff --git a/src/main/java/org/springframework/samples/petclinic/PetClinicParallelBootstrapInitializer.java b/src/main/java/org/springframework/samples/petclinic/PetClinicParallelBootstrapInitializer.java
 new file mode 100644
-index 0000000..a1d28df
+index 0000000..f48b928
 --- /dev/null
 +++ b/src/main/java/org/springframework/samples/petclinic/PetClinicParallelBootstrapInitializer.java
-@@ -0,0 +1,97 @@
-+/*
-+ * Copyright 2012-2025 the original author or authors.
-+ *
-+ * Licensed under the Apache License, Version 2.0 (the "License");
-+ * you may not use this file except in compliance with the License.
-+ * You may obtain a copy of the License at
-+ *
-+ *      https://www.apache.org/licenses/LICENSE-2.0
-+ *
-+ * Unless required by applicable law or agreed to in writing, software
-+ * distributed under the License is distributed on an "AS IS" BASIS,
-+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-+ * See the License for the specific language governing permissions and
-+ * limitations under the License.
-+ */
-+
+@@ -0,0 +1,24 @@
 +package org.springframework.samples.petclinic;
 +
 +import io.github.jdubois.springbooster.ParallelBootstrapBeanFactoryPostProcessor;
 +import io.github.jdubois.springbooster.ParallelBootstrapSettings;
-+import java.util.function.Predicate;
-+import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 +import org.springframework.context.ApplicationContextInitializer;
 +import org.springframework.context.ConfigurableApplicationContext;
 +import org.springframework.core.env.Environment;
 +
-+/**
-+ * Wires in Spring Booster's parallel bean instantiation, restricted to Petclinic's
-+ * own application beans.
-+ *
-+ * <p>The library's plain {@code @EnableParallelBootstrap} annotation uses an
-+ * accept-all candidate filter, which is unsafe on a typical Spring Boot application:
-+ * it marks framework/auto-configuration beans (e.g. the Spring Data JPA
-+ * repositories) for background initialization even though they are pulled by type on
-+ * the main thread, triggering a {@code BeanCurrentlyInCreationException}. This is the
-+ * documented limitation in the library's SPECIFICATION.md (§5).
-+ *
-+ * <p>Following the library's recommended mitigation, this initializer registers the
-+ * post-processor programmatically with a {@link ParallelBootstrapSettings#getCandidateFilter()
-+ * candidate filter} that only allows Petclinic's own beans (package
-+ * {@code org.springframework.samples.petclinic}), excluding the Spring Data
-+ * repository proxies, which are requested by type during bootstrap.
-+ *
-+ * <p>The feature is strictly opt-in at runtime: it activates only when the
-+ * {@code boost} profile is active or {@code petclinic.parallel-bootstrap=true} is
-+ * set, so the exact same artifact serves both the sequential baseline and the
-+ * parallel ("boosted") benchmark run.
-+ */
 +public class PetClinicParallelBootstrapInitializer
 +        implements ApplicationContextInitializer<ConfigurableApplicationContext> {
-+
-+    private static final String APPLICATION_PACKAGE = "org.springframework.samples.petclinic";
-+
 +    @Override
 +    public void initialize(ConfigurableApplicationContext applicationContext) {
 +        Environment environment = applicationContext.getEnvironment();
@@ -101,39 +58,9 @@ index 0000000..a1d28df
 +        if (!enabled) {
 +            return;
 +        }
-+
-+        ConfigurableListableBeanFactory beanFactory = applicationContext.getBeanFactory();
-+        Predicate<String> applicationBeansOnly = beanName -> {
-+            Class<?> type = beanFactory.getType(beanName, false);
-+            if (type == null || !type.getName().startsWith(APPLICATION_PACKAGE)) {
-+                return false;
-+            }
-+            // Only background dependency-free "leaf" beans. Every other Petclinic bean
-+            // (controllers, the PetType formatter, the Spring Data repository proxies)
-+            // depends on a repository that is resolved by type on the main thread during
-+            // bootstrap, so it cannot be safely created on a background thread.
-+            return hasNoConstructorDependencies(type);
-+        };
-+
 +        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
-+                .candidateFilter(applicationBeansOnly)
 +                .threadNamePrefix("petclinic-boot-")
 +                .build();
-+
 +        applicationContext.addBeanFactoryPostProcessor(new ParallelBootstrapBeanFactoryPostProcessor(settings));
-+    }
-+
-+    /**
-+     * Whether the given bean type can be instantiated without injecting other beans,
-+     * i.e. it exposes an accessible no-argument constructor and no constructor that
-+     * would pull in collaborators. Such "leaf" beans are the only ones in Petclinic
-+     * that are safe to create on a background thread.
-+     */
-+    private static boolean hasNoConstructorDependencies(Class<?> type) {
-+        java.lang.reflect.Constructor<?>[] constructors = type.getDeclaredConstructors();
-+        if (constructors.length != 1) {
-+            return false;
-+        }
-+        return constructors[0].getParameterCount() == 0;
 +    }
 +}
