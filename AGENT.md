@@ -100,16 +100,20 @@ resolved on the bean's own thread).
 structurally-ineligible bean (infra, cyclic, factory beans, `depends-on` targets,
 opted-out, filtered-out, lazy/non-singleton) and propagates that across **sync** edges
 to a fixpoint. A bean is backgrounded only when no sync edge connects it — in either
-direction — to a main-thread bean. This prevents the
-`BeanCurrentlyInCreationException` ("marked for background initialization but
-requested in mainline thread") that Spring Petclinic hit. See **§5 of
-SPECIFICATION.md** for the correctness argument.
+direction — to a main-thread bean. This makes parallelization safe for every
+dependency that is *visible* in the graph. See **§5 of SPECIFICATION.md** for the
+correctness argument.
 
-When touching selection: keep the forced-vs-sync edge classification intact, never
-weaken the propagation, and remember the remaining blind spot — dependencies that are
-not visible at a definition/injection-point level (e.g. a captured `ObjectProvider`
-resolved later, or a direct `getBean(...)`). Default behaviour is intentionally
-conservative; `candidateFilter` and `OPT_OUT_ATTRIBUTE` are the levers to widen or
+When touching selection: keep the forced-vs-sync edge classification intact and never
+weaken the propagation. **Known residual blind spot:** dependencies that are not
+visible at a definition/injection-point level — most importantly a **direct
+`getBean(...)` call from inside bean code** (e.g. Spring Data's
+`SpringDataWebConfiguration` lazily pulls `sortResolver` from its
+`addArgumentResolvers` callback on the main thread). Because of this the default
+accept-all `candidateFilter` is **not safe** on a fully auto-configured Spring Boot
+web app; the `benchmark/` Petclinic harness therefore scopes the filter to the
+application's own packages. Default behaviour is intentionally conservative;
+`candidateFilter` and `OPT_OUT_ATTRIBUTE` are the levers to widen or
 narrow the set.
 
 ## When in doubt

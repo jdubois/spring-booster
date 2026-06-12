@@ -39,7 +39,10 @@ executor down after refresh.
   now resolves by-type / `@Autowired` / `ObjectProvider` edges statically (see §4
   and §5), but lookups performed dynamically from inside bean code (e.g. a captured
   `ObjectProvider` resolved later, or a `BeanFactory.getBean(...)` call) remain
-  invisible; the connectivity-safe selection in §5 is what keeps those cases safe.
+  invisible. Because of this residual blind spot the default accept-all
+  `candidateFilter` is **not universally safe** on a fully auto-configured Spring
+  Boot application; the recommended usage is a `candidateFilter` scoped to your own
+  packages (see §5.3).
 
 ### 1.3 Design goals (in priority order)
 
@@ -195,7 +198,7 @@ graph still performs **pure analysis and never instantiates a bean.**
 
 ---
 
-## 5. By-type / `ObjectProvider` autowiring — modelled, and made safe
+## 5. By-type / `ObjectProvider` autowiring — modelled, and made safe within the visible graph
 
 Earlier versions of Spring Booster modelled only *explicit* references and were
 blind to by-type autowiring, `@Autowired` injection points, and `ObjectProvider`
@@ -252,28 +255,44 @@ backgrounded.
 
 ### 5.3 Consequences
 
-* Spring Booster is now **safe to enable with the default accept-all
-  `candidateFilter`**: it degrades to backgrounding only beans whose sync-dependency
-  component is entirely backgroundable, and falls back to sequential bootstrap when in
-  doubt (design goal #1).
+* All **declaration-level** relationships are now modelled and made safe: explicit
+  references plus by-type / `@Autowired` / `ObjectProvider` / collection autowiring.
+  Within that scope, selection is provably safe — a bean is backgrounded only when its
+  *visible* sync component is entirely backgroundable — and the bootstrap falls back to
+  sequential when in doubt (design goal #1).
 * The trade-off is conservatism: on a large application where most beans are
-  sync-connected to framework/auto-configuration beans, relatively few beans may be
-  parallelized by default. `candidateFilter` (e.g. restricting to your own
-  `com.example.*` beans) and `OPT_OUT_ATTRIBUTE` remain the levers to widen or narrow
-  the set deliberately.
-* **Remaining blind spot:** dependencies that are *not* expressed at a
-  definition/injection-point level — e.g. a captured `ObjectProvider` resolved later
-  from inside bean code, or a direct `beanFactory.getBean(...)` call — are still
-  invisible. These are handled by the same safety net: such a lookup target is only
-  unsafe if it was backgrounded, and a bean is only backgrounded when its *visible*
-  sync component is isolated, which already excludes the typical offenders.
+  sync-connected to framework/auto-configuration beans, relatively few beans are
+  parallelized. The recommended way to enable the feature on a real application is a
+  `candidateFilter` scoped to your own packages (e.g. `com.example.*`). Thanks to
+  connectivity-safe selection this is now **ergonomic** — you no longer have to
+  hand-pick individual dependency-free beans; any of your beans that is sync-connected
+  to a main-thread bean is pulled back to the main thread automatically. (Verified on
+  Spring Petclinic: a `org.springframework.samples.petclinic`-scoped filter boots
+  reliably.)
+* **Remaining blind spot — accept-all is *not* universally safe.** Dependencies that
+  are not expressed at a definition/injection-point level remain invisible, most
+  importantly a **direct `getBean(...)` call from inside bean code**. A fully
+  auto-configured Spring Boot web application hits exactly this: Spring Data's
+  `SpringDataWebConfiguration` captures the `ApplicationContext` and, from inside its
+  `WebMvcConfigurer.addArgumentResolvers(...)` callback, lazily calls
+  `getBean(SortHandlerMethodArgumentResolver.class)` on the **main** thread. If that
+  resolver was backgrounded (as the default accept-all filter would do), the framework
+  throws `BeanCurrentlyInCreationException`. No static graph can see this edge, so the
+  default accept-all `candidateFilter` is **unsafe on such applications** and a
+  package-scoped (or otherwise curated) filter remains required there.
 
 ### 5.4 Possible future work
 
-* **Whole-application benchmark harness** to quantify the startup win and guard
-  against regressions on representative apps (e.g. an automated Petclinic run).
+* **Close the `getBean`-from-bean-code blind spot** so the default accept-all filter
+  becomes safe on fully auto-configured applications — e.g. by never backgrounding
+  `@Bean`-method beans of full-mode `@Configuration` classes (which can be
+  self-invoked via lifecycle callbacks), or by an opt-in "scan bean code for
+  `getBean`/`ObjectProvider` capture" pass. Each trades parallelism for safety.
 * **`@Lazy` / `ObjectProvider` guidance or auto-rewriting** for mainline dependents
   of background beans, which could let more beans be parallelized safely.
+* The `benchmark/` directory provides a reproducible Spring Petclinic startup
+  harness; extending it to apps with many independent heavyweight beans would better
+  quantify the win.
 
 ---
 

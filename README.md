@@ -14,15 +14,18 @@ The feature is **strictly opt-in**: nothing is parallelized unless you enable it
 explicitly, and it always degrades gracefully to the normal sequential bootstrap
 if anything goes wrong.
 
-> ℹ️ **Safe by default.** The dependency analysis now models **by-type /
+> ℹ️ **Much safer, but not safe with the accept-all default on a fully
+> auto-configured app.** The dependency analysis now models **by-type /
 > `@Autowired` / `ObjectProvider` autowiring** in addition to explicit references,
 > and candidate selection is **connectivity-safe**: a bean is parallelized only when
 > no dependency edge connects it — in either direction — to a bean that runs on the
-> main thread. This prevents the `BeanCurrentlyInCreationException` that earlier
-> versions could trigger on Spring Boot auto-configuration. The trade-off is
-> conservatism — on a large app relatively few beans may be parallelized by default;
-> use a `candidateFilter` to widen the set to beans you know are safe. See
-> [SPECIFICATION.md](SPECIFICATION.md) §5 for the details.
+> main thread. This closes the *visible*-edge gap that earlier versions tripped over.
+> However, dependencies resolved by a **direct `getBean(...)` call from inside bean
+> code** (e.g. Spring Data's `SpringDataWebConfiguration`) are invisible to any static
+> analysis, so the default accept-all filter can still trigger a
+> `BeanCurrentlyInCreationException` on a typical Spring Boot web app. **Recommended
+> usage is a `candidateFilter` scoped to your own packages** — which is now ergonomic
+> (no need to hand-pick beans). See [SPECIFICATION.md](SPECIFICATION.md) §5.
 
 ---
 
