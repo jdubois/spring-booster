@@ -39,8 +39,9 @@ import org.springframework.context.annotation.Import;
  * }</pre>
  *
  * <p>This registers a {@link ParallelBootstrapBeanFactoryPostProcessor} that plans
- * which beans can be created concurrently and installs a bounded, CPU-sized
- * bootstrap thread pool. Nothing is parallelized unless this annotation (or an
+ * which beans can be created concurrently and installs a bounded bootstrap thread
+ * pool sized, by default, at twice the number of available processors. Nothing is
+ * parallelized unless this annotation (or an
  * equivalent programmatic registration) is present, keeping the feature strictly
  * opt-in.
  *
@@ -68,7 +69,9 @@ public @interface EnableParallelBootstrap {
 
 	/**
 	 * The number of threads in the bounded bootstrap pool. A value of {@code -1}
-	 * (the default) derives the size from the number of available processors.
+	 * (the default) derives the size as twice the number of available processors
+	 * (with a floor of {@code 2}), since bootstrap work is often I/O- or
+	 * blocking-bound. Set an explicit positive value to override this.
 	 */
 	int poolSize() default -1;
 

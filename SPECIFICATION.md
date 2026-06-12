@@ -217,7 +217,7 @@ high-value next step.
 ## 6. Lifecycle and resource management
 
 * The bootstrap executor is a `ThreadPoolExecutor` with a **fixed, bounded** size
-  (`max(2, availableProcessors())` by default) and **daemon** threads named with the
+  (`max(2, availableProcessors() * 2)` by default) and **daemon** threads named with the
   configured prefix (default `parallel-bootstrap-`).
 * A `ContextRefreshedEvent` listener (registered as a manual singleton so the event
   multicaster detects it) clears the factory's bootstrap executor and shuts the pool
