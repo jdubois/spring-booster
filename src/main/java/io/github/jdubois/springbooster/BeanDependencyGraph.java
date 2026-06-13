@@ -232,6 +232,8 @@ final class BeanDependencyGraph {
                 continue;
             }
             String factoryBeanName = mbd.getFactoryBeanName();
+            // Skip beans that are not factory-method beans (no factory bean), the factory
+            // bean itself (self-reference), or beans whose factory is outside the graph.
             if (factoryBeanName == null || factoryBeanName.equals(beanName) || !nodes.contains(factoryBeanName)) {
                 continue;
             }
