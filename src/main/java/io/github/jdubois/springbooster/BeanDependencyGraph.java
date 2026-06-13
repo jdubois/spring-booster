@@ -325,6 +325,62 @@ final class BeanDependencyGraph {
     }
 
     /**
+     * Compute the maximum number of beans from the given subset that can be instantiated
+     * concurrently, i.e. the size of the widest topological layer of the subgraph induced
+     * by {@code subset} (only edges whose source and target are both in the subset are
+     * considered).
+     * <p>This is the achievable concurrency width of a background candidate set: a pool
+     * larger than this width can never keep more than this many threads busy at once for
+     * these beans. Used to size the bootstrap pool adaptively. Any subset beans that remain
+     * blocked by a cycle internal to the subset are ignored (they cannot be layered);
+     * background candidates are cycle-free by construction.
+     * @param subset the bean names to consider (typically the selected background candidates)
+     * @return the widest concurrent layer size, or {@code 0} if the subset is empty
+     */
+    int maxConcurrentWidth(Set<String> subset) {
+        if (subset.isEmpty()) {
+            return 0;
+        }
+        Map<String, Integer> remaining = new HashMap<>(subset.size());
+        Map<String, Set<String>> dependents = new HashMap<>(subset.size());
+        for (String node : subset) {
+            dependents.computeIfAbsent(node, k -> new LinkedHashSet<>());
+        }
+        for (String node : subset) {
+            Set<String> deps = new LinkedHashSet<>(this.dependencies.getOrDefault(node, Collections.emptySet()));
+            deps.remove(node);
+            deps.retainAll(subset);
+            remaining.put(node, deps.size());
+            for (String dep : deps) {
+                dependents.computeIfAbsent(dep, k -> new LinkedHashSet<>()).add(node);
+            }
+        }
+
+        Set<String> ready = new LinkedHashSet<>();
+        for (String node : subset) {
+            if (remaining.getOrDefault(node, 0) == 0) {
+                ready.add(node);
+            }
+        }
+        int maxWidth = 0;
+        while (!ready.isEmpty()) {
+            maxWidth = Math.max(maxWidth, ready.size());
+            Set<String> next = new LinkedHashSet<>();
+            for (String node : ready) {
+                for (String dependent : dependents.getOrDefault(node, Collections.emptySet())) {
+                    int count = remaining.getOrDefault(dependent, 0) - 1;
+                    remaining.put(dependent, count);
+                    if (count == 0) {
+                        next.add(dependent);
+                    }
+                }
+            }
+            ready = next;
+        }
+        return maxWidth;
+    }
+
+    /**
      * Compute the set of beans that participate in a dependency cycle, using
      * Tarjan's strongly-connected-components algorithm. A bean is included if it
      * belongs to a strongly connected component containing more than one node, or if

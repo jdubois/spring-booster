@@ -105,4 +105,27 @@ public @interface EnableParallelBootstrap {
      * @see ParallelBootstrapSettings#isProfileStartup()
      */
     boolean profileStartup() default false;
+
+    /**
+     * The minimum number of eligible background candidates required before parallel
+     * bootstrapping is engaged. Defaults to {@code 1} (any candidate triggers
+     * parallelism). A higher value acts as a "don't bother" guard: when fewer beans than
+     * this would be backgrounded, the context bootstraps sequentially instead, so the
+     * bounded-pool overhead is never paid for a negligible win.
+     * @return the minimum number of background candidates required to engage parallelism
+     * @see ParallelBootstrapSettings#getMinimumBackgroundCandidates()
+     */
+    int minimumBackgroundCandidates() default 1;
+
+    /**
+     * Whether the bootstrap pool is sized to the dependency graph's achievable
+     * concurrency width rather than to the fixed {@link #poolSize() pool size}. Defaults
+     * to {@code false}. When {@code true}, the pool is capped at the widest topological
+     * layer of the selected candidate subgraph (floor of {@code 2}, never exceeding the
+     * configured pool size), avoiding idle threads when the candidates cannot all run at
+     * once.
+     * @return whether the pool is sized to the measured concurrency width
+     * @see ParallelBootstrapSettings#isAdaptivePoolSize()
+     */
+    boolean adaptivePoolSize() default false;
 }

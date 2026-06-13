@@ -54,13 +54,19 @@ public final class ParallelBootstrapSettings {
 
     private final boolean profileStartup;
 
+    private final int minimumBackgroundCandidates;
+
+    private final boolean adaptivePoolSize;
+
     private ParallelBootstrapSettings(
             boolean enabled,
             int poolSize,
             String threadNamePrefix,
             Predicate<String> candidateFilter,
             boolean backgroundFactoryMethodBeans,
-            boolean profileStartup) {
+            boolean profileStartup,
+            int minimumBackgroundCandidates,
+            boolean adaptivePoolSize) {
 
         this.enabled = enabled;
         this.poolSize = poolSize;
@@ -68,6 +74,8 @@ public final class ParallelBootstrapSettings {
         this.candidateFilter = candidateFilter;
         this.backgroundFactoryMethodBeans = backgroundFactoryMethodBeans;
         this.profileStartup = profileStartup;
+        this.minimumBackgroundCandidates = minimumBackgroundCandidates;
+        this.adaptivePoolSize = adaptivePoolSize;
     }
 
     /**
@@ -145,6 +153,40 @@ public final class ParallelBootstrapSettings {
     }
 
     /**
+     * The minimum number of eligible background candidates required before parallel
+     * bootstrapping is actually engaged.
+     * <p>Defaults to {@code 1} (any single candidate triggers parallelism). Installing
+     * and tearing down a bounded thread pool has a fixed cost, and on applications whose
+     * startup is dominated by a few main-thread {@code @Bean} beans the handful of
+     * lightweight background candidates can save less time than the pool costs to run —
+     * occasionally making a "boosted" start marginally <em>slower</em> than a sequential
+     * one. Setting a higher threshold acts as a "don't bother" guard: when fewer than this
+     * many beans would be backgrounded, the post-processor skips planning entirely and the
+     * context bootstraps sequentially. This extends the graceful-degradation design goal to
+     * "never make startup worse".
+     * @return the minimum number of background candidates required to engage parallelism
+     */
+    public int getMinimumBackgroundCandidates() {
+        return this.minimumBackgroundCandidates;
+    }
+
+    /**
+     * Whether the bootstrap pool is sized to the dependency graph's achievable
+     * concurrency width rather than to the fixed {@link #getPoolSize() pool size}.
+     * <p>Defaults to {@code false}, preserving the fixed pool size. When {@code true}, the
+     * post-processor measures how many of the selected background candidates can actually
+     * run at the same time — the widest topological layer of the candidate subgraph — and
+     * caps the pool at that width (with a floor of {@code 2} and never exceeding
+     * {@link #getPoolSize()}). A dependency-constrained candidate set that can only ever run
+     * two beans concurrently gains nothing from an eight-thread pool; adaptive sizing avoids
+     * the idle threads and the associated scheduling overhead.
+     * @return whether the pool is sized to the measured concurrency width
+     */
+    public boolean isAdaptivePoolSize() {
+        return this.adaptivePoolSize;
+    }
+
+    /**
      * Create settings with sensible defaults: enabled, a pool size of twice the
      * number of available processors, the {@code parallel-bootstrap-} thread prefix,
      * and a candidate filter that accepts every bean.
@@ -201,6 +243,10 @@ public final class ParallelBootstrapSettings {
         private boolean backgroundFactoryMethodBeans = false;
 
         private boolean profileStartup = false;
+
+        private int minimumBackgroundCandidates = 1;
+
+        private boolean adaptivePoolSize = false;
 
         private Builder() {}
 
@@ -281,6 +327,39 @@ public final class ParallelBootstrapSettings {
         }
 
         /**
+         * Set the minimum number of eligible background candidates required before
+         * parallel bootstrapping is engaged. Must be at least {@code 1}. Defaults to
+         * {@code 1} (any candidate triggers parallelism). A higher value acts as a
+         * "don't bother" guard: when fewer beans than this would be backgrounded, the
+         * context bootstraps sequentially instead, so the executor overhead is never paid
+         * for a negligible win.
+         * @param minimumBackgroundCandidates the minimum candidate count (must be at least {@code 1})
+         * @return this builder
+         * @see ParallelBootstrapSettings#getMinimumBackgroundCandidates()
+         */
+        public Builder minimumBackgroundCandidates(int minimumBackgroundCandidates) {
+            Assert.isTrue(minimumBackgroundCandidates >= 1, "'minimumBackgroundCandidates' must be at least 1");
+            this.minimumBackgroundCandidates = minimumBackgroundCandidates;
+            return this;
+        }
+
+        /**
+         * Set whether the bootstrap pool is sized to the measured concurrency width of
+         * the selected candidate set rather than to the fixed {@link #poolSize(int) pool
+         * size}. Defaults to {@code false}. When {@code true}, the pool is capped at the
+         * widest topological layer of the candidate subgraph (floor of {@code 2}, never
+         * exceeding the configured pool size), avoiding idle threads when the candidates
+         * cannot all run concurrently.
+         * @param adaptivePoolSize whether to size the pool to the measured concurrency width
+         * @return this builder
+         * @see ParallelBootstrapSettings#isAdaptivePoolSize()
+         */
+        public Builder adaptivePoolSize(boolean adaptivePoolSize) {
+            this.adaptivePoolSize = adaptivePoolSize;
+            return this;
+        }
+
+        /**
          * Build the immutable {@link ParallelBootstrapSettings} instance.
          * @return the immutable settings instance
          */
@@ -291,7 +370,9 @@ public final class ParallelBootstrapSettings {
                     this.threadNamePrefix,
                     this.candidateFilter,
                     this.backgroundFactoryMethodBeans,
-                    this.profileStartup);
+                    this.profileStartup,
+                    this.minimumBackgroundCandidates,
+                    this.adaptivePoolSize);
         }
     }
 }

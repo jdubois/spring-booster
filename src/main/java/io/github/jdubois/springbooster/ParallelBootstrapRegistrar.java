@@ -81,6 +81,14 @@ class ParallelBootstrapRegistrar implements ImportBeanDefinitionRegistrar {
             if (profileStartup instanceof Boolean profileValue) {
                 builder.profileStartup(profileValue);
             }
+            Object minimumBackgroundCandidates = attributes.get("minimumBackgroundCandidates");
+            if (minimumBackgroundCandidates instanceof Number minimumValue && minimumValue.intValue() >= 1) {
+                builder.minimumBackgroundCandidates(minimumValue.intValue());
+            }
+            Object adaptivePoolSize = attributes.get("adaptivePoolSize");
+            if (adaptivePoolSize instanceof Boolean adaptiveValue) {
+                builder.adaptivePoolSize(adaptiveValue);
+            }
         }
         return builder.build();
     }

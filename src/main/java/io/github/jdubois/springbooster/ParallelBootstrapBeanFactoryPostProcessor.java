@@ -140,20 +140,26 @@ public class ParallelBootstrapBeanFactoryPostProcessor
             return;
         }
         try {
-            List<String> candidates = planCandidates(beanFactory);
-            if (candidates.isEmpty()) {
-                logger.debug("No eligible beans for parallel bootstrap; using sequential instantiation");
+            BeanDependencyGraph graph = buildGraph(beanFactory);
+            List<String> candidates = planCandidates(beanFactory, graph);
+            if (candidates.size() < this.settings.getMinimumBackgroundCandidates()) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Only " + candidates.size() + " eligible bean(s) for parallel bootstrap (minimum "
+                            + this.settings.getMinimumBackgroundCandidates()
+                            + "); using sequential instantiation");
+                }
                 return;
             }
             for (String beanName : candidates) {
                 markForBackgroundInit(beanFactory, beanName);
             }
-            ThreadPoolExecutor executor = createBoundedExecutor();
+            int poolSize = effectivePoolSize(graph, candidates);
+            ThreadPoolExecutor executor = createBoundedExecutor(poolSize);
             beanFactory.setBootstrapExecutor(executor);
             registerShutdownHook(beanFactory, executor);
             if (logger.isInfoEnabled()) {
                 logger.info("Parallel bootstrap enabled for " + candidates.size() + " bean(s) using a pool of "
-                        + this.settings.getPoolSize() + " thread(s)");
+                        + poolSize + " thread(s)");
             }
         } catch (RuntimeException ex) {
             // Kill-switch / graceful fallback: never let planning break the context.
@@ -174,22 +180,35 @@ public class ParallelBootstrapBeanFactoryPostProcessor
      * background bean pulling a main-thread bean).
      */
     List<String> planCandidates(ConfigurableListableBeanFactory beanFactory) {
+        return planCandidates(beanFactory, buildGraph(beanFactory));
+    }
+
+    /**
+     * Build the dependency graph over every registered bean definition so that all
+     * dependency relationships (including by-type autowiring) are visible. Unless the
+     * caller has opted in to backgrounding factory-method beans, co-locate every
+     * {@code @Bean} bean with its configuration class so the bootstrap stays safe against
+     * the dynamic, by-type lookups that configuration classes perform on the main thread.
+     */
+    private BeanDependencyGraph buildGraph(ConfigurableListableBeanFactory beanFactory) {
         List<String> allNames = List.of(beanFactory.getBeanDefinitionNames());
+        return BeanDependencyGraph.build(beanFactory, allNames, !this.settings.isBackgroundFactoryMethodBeans());
+    }
+
+    /**
+     * Determine the ordered list of background candidates against an already-built
+     * {@link BeanDependencyGraph}, so the caller can reuse the same graph (for example to
+     * size the pool from its concurrency width) without rebuilding it.
+     */
+    List<String> planCandidates(ConfigurableListableBeanFactory beanFactory, BeanDependencyGraph graph) {
         List<String> singletons = new ArrayList<>();
-        for (String beanName : allNames) {
+        for (String beanName : beanFactory.getBeanDefinitionNames()) {
             BeanDefinition bd = safeGetBeanDefinition(beanFactory, beanName);
             if (bd != null && !bd.isAbstract() && bd.isSingleton() && !bd.isLazyInit()) {
                 singletons.add(beanName);
             }
         }
 
-        // Build the graph over every registered bean definition so that all
-        // dependency relationships (including by-type autowiring) are visible. Unless the
-        // caller has opted in to backgrounding factory-method beans, co-locate every
-        // @Bean bean with its configuration class so the bootstrap stays safe against the
-        // dynamic, by-type lookups that configuration classes perform on the main thread.
-        BeanDependencyGraph graph =
-                BeanDependencyGraph.build(beanFactory, allNames, !this.settings.isBackgroundFactoryMethodBeans());
         Set<String> cyclic = graph.beansInCycles();
         Set<String> forcedMainline = collectForcedMainlineBeans(beanFactory);
 
@@ -214,6 +233,25 @@ public class ParallelBootstrapBeanFactoryPostProcessor
             }
         }
         return candidates;
+    }
+
+    /**
+     * Resolve the pool size to install for the given candidate set. With adaptive sizing
+     * enabled, this is the candidates' achievable concurrency width (the widest topological
+     * layer of their induced subgraph), floored at {@code 2} and capped at the configured
+     * {@link ParallelBootstrapSettings#getPoolSize() pool size}; otherwise it is the
+     * configured pool size unchanged.
+     */
+    int effectivePoolSize(BeanDependencyGraph graph, List<String> candidates) {
+        int configured = this.settings.getPoolSize();
+        if (!this.settings.isAdaptivePoolSize()) {
+            return configured;
+        }
+        int width = graph.maxConcurrentWidth(new LinkedHashSet<>(candidates));
+        if (width <= 0) {
+            return configured;
+        }
+        return Math.min(configured, Math.max(2, width));
     }
 
     /**
@@ -320,8 +358,7 @@ public class ParallelBootstrapBeanFactoryPostProcessor
         }
     }
 
-    private ThreadPoolExecutor createBoundedExecutor() {
-        int poolSize = this.settings.getPoolSize();
+    private ThreadPoolExecutor createBoundedExecutor(int poolSize) {
         ThreadFactory threadFactory = new BootstrapThreadFactory(this.settings.getThreadNamePrefix());
         return new ThreadPoolExecutor(
                 poolSize, poolSize, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(), threadFactory);
