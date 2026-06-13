@@ -16,6 +16,7 @@
 
 package io.github.jdubois.springbooster;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Executor;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -214,7 +215,7 @@ public class ParallelBootstrapBeanFactoryPostProcessor
     }
 
     private List<String> findPreMarkedCandidates(ConfigurableListableBeanFactory beanFactory) {
-        List<String> candidates = new java.util.ArrayList<>();
+        List<String> candidates = new ArrayList<>();
         for (String beanName : beanFactory.getBeanDefinitionNames()) {
             BeanDefinition beanDefinition = safeGetBeanDefinition(beanFactory, beanName);
             if (beanDefinition instanceof AbstractBeanDefinition abstractBeanDefinition
