@@ -32,7 +32,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
-import java.util.stream.Collectors;
 import org.jspecify.annotations.Nullable;
 import org.springframework.beans.factory.BeanFactoryInitializer;
 import org.springframework.beans.factory.SmartInitializingSingleton;
@@ -136,7 +135,8 @@ final class ParallelBootstrapPlanner {
             dependsOn = String.join(",", new TreeSet<>(List.of(beanDefinition.getDependsOn())));
         }
         String beanClassName = (beanDefinition.getBeanClassName() != null ? beanDefinition.getBeanClassName() : "");
-        String factoryBeanName = (beanDefinition.getFactoryBeanName() != null ? beanDefinition.getFactoryBeanName() : "");
+        String factoryBeanName =
+                (beanDefinition.getFactoryBeanName() != null ? beanDefinition.getFactoryBeanName() : "");
         String factoryMethodName =
                 (beanDefinition.getFactoryMethodName() != null ? beanDefinition.getFactoryMethodName() : "");
         return String.join(
@@ -192,7 +192,9 @@ final class ParallelBootstrapPlanner {
         Map<String, Set<String>> dependents = new HashMap<>();
         for (String node : graph.getNodes()) {
             for (String dependency : graph.getSyncDependencies(node)) {
-                dependents.computeIfAbsent(dependency, key -> new LinkedHashSet<>()).add(node);
+                dependents
+                        .computeIfAbsent(dependency, key -> new LinkedHashSet<>())
+                        .add(node);
             }
         }
         Deque<String> worklist = new ArrayDeque<>(mainline);

@@ -151,7 +151,8 @@ class ParallelBootstrapIntegrationTests {
                 .runtimePlanningEnabled(false)
                 .build();
         try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
-            PlanResourceClassLoader classLoader = new PlanResourceClassLoader(getClass().getClassLoader(), "");
+            PlanResourceClassLoader classLoader =
+                    new PlanResourceClassLoader(getClass().getClassLoader(), "");
             new ParallelBootstrapApplicationContextInitializer(settings).initialize(context);
             for (int i = 0; i < 4; i++) {
                 context.registerBeanDefinition("component" + i, new RootBeanDefinition(ComponentRecordingBean.class));
@@ -180,7 +181,9 @@ class ParallelBootstrapIntegrationTests {
             new ParallelBootstrapApplicationContextInitializer(settings).initialize(context);
             context.register(PlainRecordingConfig.class);
             ClassLoader previous = Thread.currentThread().getContextClassLoader();
-            Thread.currentThread().setContextClassLoader(new PlanResourceClassLoader(getClass().getClassLoader(), "broken-plan"));
+            Thread.currentThread()
+                    .setContextClassLoader(
+                            new PlanResourceClassLoader(getClass().getClassLoader(), "broken-plan"));
             try {
                 context.refresh();
             } finally {
@@ -201,7 +204,9 @@ class ParallelBootstrapIntegrationTests {
             new ParallelBootstrapApplicationContextInitializer(settings).initialize(context);
             context.register(PlainRecordingConfig.class);
             ClassLoader previous = Thread.currentThread().getContextClassLoader();
-            Thread.currentThread().setContextClassLoader(new PlanResourceClassLoader(getClass().getClassLoader(), "broken-plan"));
+            Thread.currentThread()
+                    .setContextClassLoader(
+                            new PlanResourceClassLoader(getClass().getClassLoader(), "broken-plan"));
             try {
                 context.refresh();
             } finally {

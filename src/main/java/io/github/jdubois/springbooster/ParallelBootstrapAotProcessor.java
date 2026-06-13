@@ -48,8 +48,11 @@ public final class ParallelBootstrapAotProcessor implements BeanFactoryInitializ
             implements BeanFactoryInitializationAotContribution {
 
         @Override
-        public void applyTo(GenerationContext generationContext, BeanFactoryInitializationCode beanFactoryInitializationCode) {
-            generationContext.getGeneratedFiles().addResourceFile(ParallelBootstrapPlan.RESOURCE_LOCATION, this.plan.toResourceContent());
+        public void applyTo(
+                GenerationContext generationContext, BeanFactoryInitializationCode beanFactoryInitializationCode) {
+            generationContext
+                    .getGeneratedFiles()
+                    .addResourceFile(ParallelBootstrapPlan.RESOURCE_LOCATION, this.plan.toResourceContent());
         }
     }
 }

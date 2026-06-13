@@ -45,15 +45,16 @@ class ParallelBootstrapAotProcessorTests {
 
         assertThat(contribution).isNotNull();
         InMemoryGeneratedFiles generatedFiles = new InMemoryGeneratedFiles();
-        DefaultGenerationContext generationContext =
-                new DefaultGenerationContext(new ClassNameGenerator(ClassName.get("com.example", "Test")), generatedFiles);
+        DefaultGenerationContext generationContext = new DefaultGenerationContext(
+                new ClassNameGenerator(ClassName.get("com.example", "Test")), generatedFiles);
         contribution.applyTo(generationContext, null);
 
-        String content =
-                generatedFiles.getGeneratedFileContent(GeneratedFiles.Kind.RESOURCE, ParallelBootstrapPlan.RESOURCE_LOCATION);
+        String content = generatedFiles.getGeneratedFileContent(
+                GeneratedFiles.Kind.RESOURCE, ParallelBootstrapPlan.RESOURCE_LOCATION);
         ParallelBootstrapPlan plan = ParallelBootstrapPlan.fromResourceContent(content);
         assertThat(plan.getCandidateBeanNames()).contains("leaf", "consumer");
-        assertThat(plan.getBeanNames()).contains("leaf", "consumer", ParallelBootstrapInfrastructure.POST_PROCESSOR_BEAN_NAME);
+        assertThat(plan.getBeanNames())
+                .contains("leaf", "consumer", ParallelBootstrapInfrastructure.POST_PROCESSOR_BEAN_NAME);
         assertThat(plan.getSyncDependencies()).containsKey("consumer");
         assertThat(plan.getSyncDependencies().get("consumer")).contains("leaf");
     }

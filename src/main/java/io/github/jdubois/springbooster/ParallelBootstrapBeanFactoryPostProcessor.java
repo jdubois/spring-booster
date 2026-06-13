@@ -31,7 +31,6 @@ import org.springframework.beans.factory.BeanFactoryInitializer;
 import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
-import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.beans.factory.support.AbstractBeanDefinition;
 import org.springframework.context.ApplicationListener;
@@ -165,7 +164,8 @@ public class ParallelBootstrapBeanFactoryPostProcessor
                 logger.info("Generated Spring Booster bootstrap plan is stale or incompatible; ignoring it");
             }
             if (this.settings.isGeneratedPlanRequired()) {
-                logger.warn("Generated Spring Booster bootstrap plan required but unavailable; using sequential bootstrap");
+                logger.warn(
+                        "Generated Spring Booster bootstrap plan required but unavailable; using sequential bootstrap");
                 return List.of();
             }
         }
@@ -178,7 +178,9 @@ public class ParallelBootstrapBeanFactoryPostProcessor
 
     private @Nullable ParallelBootstrapPlan loadGeneratedPlan(ConfigurableListableBeanFactory beanFactory) {
         for (ClassLoader classLoader : new ClassLoader[] {
-            beanFactory.getBeanClassLoader(), Thread.currentThread().getContextClassLoader(), getClass().getClassLoader()
+            beanFactory.getBeanClassLoader(),
+            Thread.currentThread().getContextClassLoader(),
+            getClass().getClassLoader()
         }) {
             ParallelBootstrapPlan plan = loadGeneratedPlan(classLoader);
             if (plan != null) {
@@ -192,12 +194,14 @@ public class ParallelBootstrapBeanFactoryPostProcessor
         if (classLoader == null) {
             return null;
         }
-        try (java.io.InputStream inputStream = classLoader.getResourceAsStream(ParallelBootstrapPlan.RESOURCE_LOCATION)) {
+        try (java.io.InputStream inputStream =
+                classLoader.getResourceAsStream(ParallelBootstrapPlan.RESOURCE_LOCATION)) {
             if (inputStream == null) {
                 return null;
             }
             byte[] content = inputStream.readAllBytes();
-            return ParallelBootstrapPlan.fromResourceContent(new String(content, java.nio.charset.StandardCharsets.UTF_8));
+            return ParallelBootstrapPlan.fromResourceContent(
+                    new String(content, java.nio.charset.StandardCharsets.UTF_8));
         } catch (Exception ex) {
             logger.info("Failed to read generated Spring Booster bootstrap plan; ignoring it", ex);
             return null;

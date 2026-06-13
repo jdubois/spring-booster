@@ -110,10 +110,12 @@ final class ParallelBootstrapPlan {
                 .collect(Collectors.toCollection(TreeSet::new));
         properties.setProperty("sync.keys", encodeNames(syncKeys));
         for (String beanName : syncKeys) {
-            properties.setProperty("sync." + encodeName(beanName), encodeNames(new TreeSet<>(this.syncDependencies.get(beanName))));
+            properties.setProperty(
+                    "sync." + encodeName(beanName), encodeNames(new TreeSet<>(this.syncDependencies.get(beanName))));
         }
         StringBuilder builder = new StringBuilder();
-        properties.forEach((key, value) -> builder.append(key).append('=').append(value).append('\n'));
+        properties.forEach(
+                (key, value) -> builder.append(key).append('=').append(value).append('\n'));
         return builder.toString();
     }
 
@@ -128,7 +130,8 @@ final class ParallelBootstrapPlan {
             Assert.isTrue(separator > 0, () -> "Invalid plan line: " + line);
             properties.setProperty(line.substring(0, separator), line.substring(separator + 1));
         }
-        Assert.isTrue(FORMAT_VERSION.equals(properties.getProperty("format.version")), "Unsupported plan format version");
+        Assert.isTrue(
+                FORMAT_VERSION.equals(properties.getProperty("format.version")), "Unsupported plan format version");
         Set<String> beanNames = new LinkedHashSet<>(decodeNames(properties.getProperty("bean.names")));
         List<String> candidates = decodeNames(properties.getProperty("candidates"));
         Set<String> forcedMainline = new LinkedHashSet<>(decodeNames(properties.getProperty("forced.mainline")));
