@@ -40,12 +40,13 @@ executor down after refresh.
   and §5), but lookups performed dynamically from inside bean code (e.g. a captured
   `ObjectProvider` resolved later, or a `BeanFactory.getBean(...)` call) remain
   invisible. The dominant source of such lookups is `@Configuration` classes, so by
-  default Spring Booster keeps every `@Bean` factory-method bean on the main thread
-  (co-located with its configuration class); this makes the default accept-all
-  `candidateFilter` **safe on a fully auto-configured Spring Boot application**. The
-  narrow residual blind spot — a component or plain-definition bean pulled by type
-  through a direct `getBean(...)` from another bean's initialization code — is rare
-  and app-specific (see §5.3).
+  default Spring Booster keeps the `@Bean` factory-method beans of *dynamic*
+  configurations on the main thread (co-located with their configuration class), while
+  *pure* configurations let their beans background (see §5.2.1); this makes the default
+  accept-all `candidateFilter` **safe on a fully auto-configured Spring Boot
+  application**. The narrow residual blind spot — a component or plain-definition bean
+  pulled by type through a direct `getBean(...)` from another bean's initialization code
+  — is rare and app-specific (see §5.3).
 
 ### 1.3 Design goals (in priority order)
 
@@ -99,11 +100,12 @@ All code lives in a single package: `io.github.jdubois.springbooster`.
 
 | Class | Responsibility |
 |---|---|
-| `EnableParallelBootstrap` | Public opt-in annotation. `@Import`s the registrar. Carries tuning attributes (`enabled`, `poolSize`, `threadNamePrefix`, `backgroundFactoryMethodBeans`). |
+| `EnableParallelBootstrap` | Public opt-in annotation. `@Import`s the registrar. Carries tuning attributes (`enabled`, `poolSize`, `threadNamePrefix`, `backgroundFactoryMethodBeans`, `deferProviderEdges`). |
 | `ParallelBootstrapRegistrar` | `ImportBeanDefinitionRegistrar` activated by the annotation. Translates annotation attributes into `ParallelBootstrapSettings` and registers the post-processor as an infrastructure bean (idempotently). |
 | `ParallelBootstrapApplicationContextInitializer` | `ApplicationContextInitializer` entry point for programmatic / Spring Boot (`spring.factories`) registration, with no need for the annotation. |
-| `ParallelBootstrapSettings` | Immutable configuration (pool size, thread-name prefix, kill-switch, candidate `Predicate`, `backgroundFactoryMethodBeans` toggle). Built via a fluent `Builder`. Defines the per-bean opt-out attribute. |
-| `BeanDependencyGraph` | Pure in-memory dependency graph of the bean definitions. Models both declared references **and** by-type autowiring edges (via `AutowiredEdgeResolver`), classifying each edge as *forced* or *sync*. Provides topological layering (Kahn) and cycle detection (Tarjan). Never triggers bean creation. |
+| `ParallelBootstrapSettings` | Immutable configuration (pool size, thread-name prefix, kill-switch, candidate `Predicate`, `backgroundFactoryMethodBeans` and `deferProviderEdges` toggles). Built via a fluent `Builder`. Defines the per-bean opt-out attribute. |
+| `BeanDependencyGraph` | Pure in-memory dependency graph of the bean definitions. Models both declared references **and** by-type autowiring edges (via `AutowiredEdgeResolver`), classifying each edge as *forced* or *sync* (and optionally *deferred*). Provides topological layering (Kahn) and cycle detection (Tarjan). Never triggers bean creation. |
+| `DynamicConfigurationDetector` | Statically classifies each `@Configuration`/factory bean as *dynamic* (capable of invisible by-type lookups — full `@Configuration`, `Aware`/`*Configurer`/`*Customizer`, or captured context / provider / `@Lazy` members) or *pure*, so co-location edges (§5.2.1) are added only for dynamic configurations. |
 | `AutowiredEdgeResolver` | Reflectively resolves the by-type / `@Autowired` / `ObjectProvider` dependency edges that the declarations do not reveal (`@Bean` method params, autowired constructors, `@Autowired` fields/methods), unwrapping `ObjectProvider`/`ObjectFactory`/`Provider`/`Optional`/collections/maps/arrays. Resolves candidate names with eager init disabled, so it never instantiates a bean. |
 | `ParallelBootstrapBeanFactoryPostProcessor` | The engine. Plans candidates (connectivity-safe selection), marks them for background init, installs the bounded executor, and registers a listener to shut it down after refresh. |
 | `package-info.java` | `@NullMarked` package declaration and overview. |
@@ -162,10 +164,11 @@ A bean is **structurally eligible only if all** of the following hold:
    `SmartInitializingSingleton`.
 7. It passes the user-supplied **`candidateFilter`** predicate (default: accept
    all).
-8. It is **not a `@Bean` factory-method bean**, *unless* the
-   `backgroundFactoryMethodBeans` setting is enabled. By default every factory-method
-   bean is co-located with its configuration class (§5), because configuration
-   classes are the primary site of dynamic, by-type bean access during refresh.
+8. It is **not a `@Bean` factory-method bean of a *dynamic* configuration**, *unless*
+   the `backgroundFactoryMethodBeans` setting is enabled. By default the factory-method
+   beans of dynamic configurations are co-located with their configuration class (§5.2.1),
+   because such configurations are the primary site of dynamic, by-type bean access during
+   refresh; the beans of *pure* configurations stay eligible.
 
 Every bean that is *not* structurally eligible is treated as a **main-thread**
 (mainline) bean. The connectivity-safe pass (§5) then removes any otherwise-eligible
@@ -272,20 +275,62 @@ captured `ApplicationContext`/`BeanFactory` used for a by-type lookup, or an
 
 Because configuration classes are *always* created on the main thread (they are the
 factory of their `@Bean` beans, hence forced-mainline), `BeanDependencyGraph.build`
-adds, by default, a **factory→bean co-location sync edge** from every configuration to
-each of its `@Bean` beans. Mainline propagation then keeps every factory-method bean on
-the main thread. The remaining background candidates — component-scanned beans and
-beans registered as plain definitions — are reached only through the framework's
-ordinary singleton path, which honours background initialization. This is what makes
-the default accept-all `candidateFilter` safe on a fully auto-configured Spring Boot
-application (verified on Spring Petclinic: 56 beans backgrounded, context starts
-cleanly).
+adds a **factory→bean co-location sync edge** from a configuration to each of its
+`@Bean` beans. Mainline propagation then keeps those factory-method beans on the main
+thread. The remaining background candidates — component-scanned beans and beans
+registered as plain definitions — are reached only through the framework's ordinary
+singleton path, which honours background initialization. This is what makes the default
+accept-all `candidateFilter` safe on a fully auto-configured Spring Boot application
+(verified on Spring Petclinic: context starts cleanly).
+
+**Per-configuration precision (default).** Co-location is only needed for
+configurations that *actually* perform such invisible by-type lookups. Most
+configurations don't — a *pure* configuration just does `return new X(injectedParams)`,
+where every dependency is a visible method parameter already modelled as a sync edge.
+`DynamicConfigurationDetector` statically classifies each configuration:
+
+* A configuration is treated as **dynamic** (co-location kept) when it shows a known
+  dynamic-lookup signature: it is a *full* `@Configuration` (CGLIB-proxied, so cross-`@Bean`
+  self-invocation is possible), implements an `Aware` callback or a framework
+  `*Configurer`/`*Customizer` interface, or captures an `ApplicationContext`/`BeanFactory`/
+  `Environment`/`ApplicationEventPublisher`/`ResourceLoader`, an `ObjectProvider`/
+  `ObjectFactory`/`Provider`, or a `@Lazy` injection point (field or constructor
+  parameter). The detector errs toward *dynamic* on any uncertainty.
+* A configuration is treated as **pure** otherwise. Its co-location edges are dropped, so
+  its `@Bean` beans — and the subtrees hanging off them — become eligible for the
+  background again.
+
+This keeps accept-all safe (the invisible-lookup channel stays closed exactly where it
+exists) while letting whole subtrees rooted at *pure* configurations move to the
+background. Spring Boot's risky auto-configurations (e.g. `WebMvc`, Spring Data web)
+implement `*Configurer`/`Aware` and so remain co-located.
 
 Setting `backgroundFactoryMethodBeans(true)` (builder) or
-`@EnableParallelBootstrap(backgroundFactoryMethodBeans = true)` disables the
-co-location edges, making `@Bean` beans eligible again for maximum parallelism — at the
-cost of reintroducing the invisible by-type pull risk, so it should be paired with a
-`candidateFilter` scoped to beans known to be safe.
+`@EnableParallelBootstrap(backgroundFactoryMethodBeans = true)` disables co-location for
+*all* configurations — dynamic ones included — making every `@Bean` bean eligible for
+maximum parallelism, at the cost of reintroducing the invisible by-type pull risk, so it
+should be paired with a `candidateFilter` scoped to beans known to be safe.
+
+#### 5.2.2 Deferred provider edges (opt-in)
+
+`ObjectProvider`/`ObjectFactory`/`Provider`/`@Lazy` are the framework's documented
+escape hatch for crossing the mainline→background boundary: the dependency is *not*
+resolved while the dependent is constructed, so depending on a background subtree only
+through a provider need not drag that subtree mainline. By default these edges are still
+modelled as hard **sync** edges (conservative, because a provider can be dereferenced
+*eagerly* inside an init callback or constructor body, which static analysis cannot
+see).
+
+Setting `deferProviderEdges(true)` (builder) or
+`@EnableParallelBootstrap(deferProviderEdges = true)` reclassifies every by-type
+provider/`@Lazy` edge as **deferred**: it is still kept in the full dependency graph
+(so cycle detection and layering are unchanged) but excluded from the *sync* component,
+so it is allowed to cross the mainline→background boundary. A mainline bean that reaches
+a background subtree *only* through a provider no longer pulls it mainline. This is
+opt-in precisely because of the eager-dereference caveat (e.g.
+`WebMvcConfigurer.addArgumentResolvers` calling `provider.getObject()` during init): if
+any deferred provider is read eagerly, the bootstrap fails fast with
+`BeanCurrentlyInCreationException` rather than producing wrong results.
 
 ### 5.3 Consequences
 
@@ -294,14 +339,15 @@ cost of reintroducing the invisible by-type pull risk, so it should be paired wi
   Within that scope, selection is provably safe — a bean is backgrounded only when its
   *visible* sync component is entirely backgroundable — and the bootstrap falls back to
   sequential when in doubt (design goal #1).
-* **Accept-all is safe by default.** Keeping every `@Bean` factory-method bean on the
-  main thread (§5.2.1) closes the dominant invisible-lookup channel, so the default
-  accept-all `candidateFilter` boots a fully auto-configured Spring Boot application
-  reliably. The trade-off is that the expensive framework `@Bean` beans (data source,
-  `EntityManagerFactory`, caches, …) are never backgrounded; the beans that *do*
-  parallelize under the default are your component-scanned beans. Applications whose
-  heavyweight beans are components — or that knowingly enable
-  `backgroundFactoryMethodBeans` — see the most benefit.
+* **Accept-all is safe by default.** Keeping the `@Bean` beans of *dynamic*
+  configurations on the main thread (§5.2.1) closes the dominant invisible-lookup
+  channel, so the default accept-all `candidateFilter` boots a fully auto-configured
+  Spring Boot application reliably. *Pure* configurations no longer co-locate their
+  beans, so the expensive framework `@Bean` beans they produce — and the subtrees below
+  them — can now background by default; only the genuinely dynamic configurations keep
+  their beans mainline. Applications also benefit from backgrounding their
+  component-scanned beans, and may enable `backgroundFactoryMethodBeans` and/or
+  `deferProviderEdges` for more parallelism where they know it is safe.
 * **Narrow residual blind spot.** A bean that is *not* a factory-method bean (a
   component or plain definition) could still be pulled by type through a **direct
   `getBean(...)` from inside another bean's initialization code**. This is rare and
@@ -314,8 +360,21 @@ cost of reintroducing the invisible by-type pull risk, so it should be paired wi
 * **Opt-in `getBean`-from-bean-code scanning** to also cover the residual component
   blind spot (above), letting `backgroundFactoryMethodBeans(true)` be safe on more
   applications.
-* **`@Lazy` / `ObjectProvider` guidance or auto-rewriting** for mainline dependents
-  of background beans, which could let more beans be parallelized safely.
+* **Refining `deferProviderEdges` (§5.2.2) to be safe by default** by distinguishing a
+  field/setter `@Lazy`/`ObjectProvider` that is never read in a constructor (genuinely
+  deferred) from an eager constructor-parameter dereference (must stay a hard sync
+  edge), so the deferred-edge benefit could be enabled without the opt-in caveat.
+* **Library-driven subtree instantiation** — grouping an eligible connected component
+  and instantiating it as a unit on a dedicated worker (e.g. eagerly `getBean`-ing the
+  component root on a bootstrap thread) instead of relying on Spring's per-bean executor
+  submission. This was *assessed and intentionally deferred*: it duplicates the
+  framework's creation-lock / lenient-handshake coordination, risks ordering and
+  `SmartInitializingSingleton` interactions, and conflicts with design goal "build on
+  framework primitives, don't invent a new bootstrap path." It is only worth pursuing if
+  benchmarks show the per-bean submission path is the bottleneck for deep chains — and
+  note that deep dependency *chains* do not parallelize even when backgrounded (each
+  level waits on the next), so the real win is widening across independent siblings,
+  which §5.2.1 (A) and §5.2.2 (B) already target.
 * The `benchmark/` directory provides a reproducible Spring Petclinic startup
   harness; extending it to apps with many independent heavyweight beans would better
   quantify the win.
