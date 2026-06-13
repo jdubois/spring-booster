@@ -394,6 +394,141 @@ class ParallelBootstrapBeanFactoryPostProcessorTests {
         assertThat(candidates).doesNotContain("product");
     }
 
+    // --- Solution 2: named completed-leaf barriers (barrierBeanNames) ---
+
+    @Test
+    void namedBarrierLetsCoLocatedConsumersOverlapWithoutFlag() {
+        // A shared DataSource exposed only as a co-located @Bean of a dynamic configuration is
+        // not in the forced-mainline set, so the structural barrier predicate rejects it and
+        // its independent consumers stay serialized. Naming it as a barrier lets those
+        // consumers overlap -- without enabling backgroundSharedInfraConsumers.
+        register("config", DynamicFactoryConfig.class);
+        registerFactoryBean("dataSource", "config");
+        registerFactoryBean("flyway", "config", "dataSource");
+        registerFactoryBean("liquibase", "config", "dataSource");
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                .barrierBeanNames("dataSource")
+                .build();
+
+        List<String> candidates =
+                new ParallelBootstrapBeanFactoryPostProcessor(settings).planCandidates(this.beanFactory);
+
+        assertThat(candidates).contains("flyway", "liquibase").doesNotContain("dataSource", "config");
+    }
+
+    @Test
+    void namedBarrierIsIgnoredWhenNotALeaf() {
+        // dataSource itself pulls a backgroundable bean during its own construction, so it is
+        // not a completed leaf; naming it a barrier must not free its consumers.
+        register("config", DynamicFactoryConfig.class);
+        registerSingleton("backgroundable");
+        registerFactoryBean("dataSource", "config", "backgroundable");
+        registerFactoryBean("flyway", "config", "dataSource");
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                .barrierBeanNames("dataSource")
+                .build();
+
+        List<String> candidates =
+                new ParallelBootstrapBeanFactoryPostProcessor(settings).planCandidates(this.beanFactory);
+
+        assertThat(candidates).doesNotContain("flyway");
+    }
+
+    @Test
+    void namedBarrierStillForcesConsumerMainlineWhenAMainThreadBeanDependsOnIt() {
+        // Reverse direction: a main-thread bean depends on the consumer, so the consumer is
+        // pulled by type during the puller's main-thread creation and must stay mainline even
+        // though its only dependency is a named barrier.
+        register("config", DynamicFactoryConfig.class);
+        registerFactoryBean("dataSource", "config");
+        registerFactoryBean("flyway", "config", "dataSource");
+        registerWithConstructorRef("puller", "flyway");
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                .barrierBeanNames("dataSource")
+                .candidateFilter(name -> !name.equals("puller"))
+                .build();
+
+        List<String> candidates =
+                new ParallelBootstrapBeanFactoryPostProcessor(settings).planCandidates(this.beanFactory);
+
+        // puller depends on flyway, so flyway is pulled onto the main thread during the
+        // puller's main-thread creation and must stay there.
+        assertThat(candidates).doesNotContain("flyway");
+    }
+
+    // --- Solution 3: co-background groups (coBackgroundGroups) ---
+
+    @Test
+    void coBackgroundGroupBackgroundsMembersDespiteDynamicConfiguration() {
+        register("config", DynamicFactoryConfig.class);
+        registerFactoryBean("alpha", "config");
+        registerFactoryBean("beta", "config");
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                .coBackgroundGroup("alpha", "beta")
+                .build();
+
+        List<String> candidates =
+                new ParallelBootstrapBeanFactoryPostProcessor(settings).planCandidates(this.beanFactory);
+
+        // Both members lose their co-location edge, so they may background while the dynamic
+        // configuration stays on the main thread.
+        assertThat(candidates).contains("alpha", "beta").doesNotContain("config");
+    }
+
+    @Test
+    void coBackgroundGroupDropsInterMemberEdgeSoMemberOverlapsCompletedDependency() {
+        // memberB is a depends-on target (forced mainline, completed before fan-out). memberA
+        // reads it. Without the group, memberA is pulled onto the main thread by the memberA ->
+        // memberB sync edge; declaring them a co-background group drops that inter-member edge,
+        // so memberA may overlap the already-completed memberB.
+        register("config", DynamicFactoryConfig.class);
+        registerFactoryBean("memberB", "config");
+        registerFactoryBean("memberA", "config", "memberB");
+        registerWithDependsOn("external", "memberB");
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                .coBackgroundGroup("memberA", "memberB")
+                .build();
+
+        List<String> candidates =
+                new ParallelBootstrapBeanFactoryPostProcessor(settings).planCandidates(this.beanFactory);
+
+        assertThat(candidates).contains("memberA").doesNotContain("memberB");
+    }
+
+    @Test
+    void coBackgroundGroupWithoutInterMemberEdgeKeepsMemberMainline() {
+        // Control for the previous test: with the same topology but no group declared, the
+        // memberA -> memberB sync edge keeps memberA on the main thread.
+        register("config", DynamicFactoryConfig.class);
+        registerFactoryBean("memberB", "config");
+        registerFactoryBean("memberA", "config", "memberB");
+        registerWithDependsOn("external", "memberB");
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                .backgroundBeanNames("memberA", "memberB")
+                .build();
+
+        List<String> candidates =
+                new ParallelBootstrapBeanFactoryPostProcessor(settings).planCandidates(this.beanFactory);
+
+        // Allow-listing alone drops co-location but keeps the inter-member edge, so memberA is
+        // still pulled mainline by its dependency on the forced-mainline memberB.
+        assertThat(candidates).doesNotContain("memberA", "memberB");
+    }
+
+    private void registerFactoryBean(String beanName, String factoryBeanName, String... constructorRefs) {
+        RootBeanDefinition bd = new RootBeanDefinition(Leaf.class);
+        bd.setFactoryBeanName(factoryBeanName);
+        bd.setFactoryMethodName("product");
+        if (constructorRefs.length > 0) {
+            ConstructorArgumentValues cav = new ConstructorArgumentValues();
+            for (String ref : constructorRefs) {
+                cav.addGenericArgumentValue(new RuntimeBeanReference(ref));
+            }
+            bd.setConstructorArgumentValues(cav);
+        }
+        this.beanFactory.registerBeanDefinition(beanName, bd);
+    }
+
     private void registerDynamicConfigWithProduct() {
         register("config", DynamicFactoryConfig.class);
         RootBeanDefinition product = new RootBeanDefinition(Leaf.class);

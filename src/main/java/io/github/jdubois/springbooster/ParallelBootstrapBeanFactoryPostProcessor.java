@@ -204,9 +204,13 @@ public class ParallelBootstrapBeanFactoryPostProcessor
         // bean, reintroducing that channel for unrelated infrastructure beans such as
         // Spring Security's authenticationEventPublisher (resolved by type on the main
         // thread from AuthenticationManagerBuilder), which fails with a
-        // BeanCurrentlyInCreationException.
+        // BeanCurrentlyInCreationException. Naming completed-leaf barriers
+        // (barrierBeanNames) activates the same relaxation for the named beans, so it too
+        // requires co-location to stay active.
+        boolean relaxSharedInfra =
+                this.settings.isBackgroundSharedInfraConsumers() || !this.settings.getBarrierBeanNames().isEmpty();
         boolean colocateFactoryMethodBeans =
-                !this.settings.isBackgroundFactoryMethodBeans() || this.settings.isBackgroundSharedInfraConsumers();
+                !this.settings.isBackgroundFactoryMethodBeans() || relaxSharedInfra;
         BeanDependencyGraph graph = BeanDependencyGraph.build(
                 beanFactory, allNames, colocateFactoryMethodBeans, this.settings.isDeferProviderEdges());
 
@@ -220,6 +224,12 @@ public class ParallelBootstrapBeanFactoryPostProcessor
         // infrastructure type, candidate filter) and the connectivity-safe propagation, so a
         // genuinely entangled bean is pulled back to the main thread rather than misbehaving.
         applyBackgroundAllowlist(beanFactory, graph);
+
+        // Apply the user-declared co-background groups: drop each member's co-location edge
+        // (like the allowlist) and additionally drop any sync co-location edge between two
+        // members of the same group, so asserted-independent heavyweights overlap rather than
+        // serialize. Forced depends-on/factory edges and the safety gates below still apply.
+        applyCoBackgroundGroups(beanFactory, graph);
 
         Set<String> cyclic = graph.beansInCycles();
         Set<String> forcedMainline = collectForcedMainlineBeans(beanFactory);
@@ -238,8 +248,15 @@ public class ParallelBootstrapBeanFactoryPostProcessor
         // from propagating mainline-ness to their pure consumers, and those consumers are
         // freed from co-location so independent consumers of one completed leaf can overlap.
         Set<String> barriers = Collections.emptySet();
-        if (this.settings.isBackgroundSharedInfraConsumers()) {
-            barriers = applySharedInfraRelaxation(beanFactory, graph, eligible, cyclic, forcedMainline);
+        if (relaxSharedInfra) {
+            barriers = applySharedInfraRelaxation(
+                    beanFactory,
+                    graph,
+                    eligible,
+                    cyclic,
+                    forcedMainline,
+                    this.settings.isBackgroundSharedInfraConsumers(),
+                    this.settings.getBarrierBeanNames());
         }
 
         Set<String> mainline = new LinkedHashSet<>(graph.getNodes());
@@ -333,14 +350,66 @@ public class ParallelBootstrapBeanFactoryPostProcessor
         for (String beanName : graph.getNodes()) {
             boolean allowlisted = allowlist.contains(beanName)
                     || ParallelBootstrapSettings.isForcedBackground(safeGetBeanDefinition(beanFactory, beanName));
-            if (!allowlisted) {
-                continue;
+            if (allowlisted) {
+                dropColocationEdge(beanFactory, graph, beanName);
             }
-            BeanDefinition mbd = safeGetMergedBeanDefinition(beanFactory, beanName);
-            String factoryBeanName = (mbd != null) ? mbd.getFactoryBeanName() : null;
-            if (factoryBeanName != null && graph.getNodes().contains(factoryBeanName)) {
-                graph.removeSyncEdge(factoryBeanName, beanName);
+        }
+    }
+
+    /**
+     * Apply the user-declared co-background groups (Solution 3): for every member of every
+     * group drop its configuration&rarr;{@code @Bean} co-location edge (exactly like the
+     * {@link #applyBackgroundAllowlist allowlist}), and additionally drop any sync co-location
+     * edge <em>between two members of the same group</em>.
+     *
+     * <p>A co-background group is a user assertion that its members are mutually independent
+     * heavyweight {@code @Bean} beans that may be constructed concurrently (the canonical
+     * cases are {@code {entityManagerFactory, springSecurityFilterChain}} and
+     * {@code {flyway, liquibase}}). Dropping the inter-member sync edges stops the
+     * connectivity-safe {@link #propagateMainline} pass from forcing an asserted-independent
+     * pair onto a single thread through a by-type edge the user has declared safe to ignore.
+     *
+     * <p>The relaxation only ever <em>removes</em> edges from the sync-connectivity view; the
+     * genuine construction dependency (if any) remains in the full dependency graph, so
+     * topological ordering and cycle detection are unchanged, and a forced
+     * {@code depends-on}/factory edge is never overridden (it is not a co-location edge). Every
+     * member must still clear {@link #isSafeCandidate} and survive {@link #propagateMainline},
+     * so a member pinned by a genuine visible sync edge to the main thread stays there, and an
+     * invisible eager by-type pull still fails fast with {@code BeanCurrentlyInCreationException}
+     * (design goal #1).
+     */
+    private void applyCoBackgroundGroups(ConfigurableListableBeanFactory beanFactory, BeanDependencyGraph graph) {
+        for (Set<String> group : this.settings.getCoBackgroundGroups()) {
+            for (String member : group) {
+                if (graph.getNodes().contains(member)) {
+                    dropColocationEdge(beanFactory, graph, member);
+                }
             }
+            // Drop co-location sync edges between mutually-independent members (both
+            // directions), so the group does not collapse onto a single thread.
+            for (String from : group) {
+                for (String to : group) {
+                    if (!from.equals(to)) {
+                        graph.removeSyncEdge(from, to);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Drop the configuration&rarr;{@code @Bean} <em>co-location</em> sync edge for the given
+     * factory-method bean, if it has one whose factory is part of the graph. Shared by the
+     * per-bean allowlist ({@link #applyBackgroundAllowlist}) and the co-background groups
+     * ({@link #applyCoBackgroundGroups}). A non-factory-method bean (no factory bean) is left
+     * untouched.
+     */
+    private static void dropColocationEdge(
+            ConfigurableListableBeanFactory beanFactory, BeanDependencyGraph graph, String beanName) {
+        BeanDefinition mbd = safeGetMergedBeanDefinition(beanFactory, beanName);
+        String factoryBeanName = (mbd != null) ? mbd.getFactoryBeanName() : null;
+        if (factoryBeanName != null && graph.getNodes().contains(factoryBeanName)) {
+            graph.removeSyncEdge(factoryBeanName, beanName);
         }
     }
 
@@ -362,7 +431,16 @@ public class ParallelBootstrapBeanFactoryPostProcessor
      * acyclic, and whose sync dependencies are all non-eligible (it pulls no backgroundable
      * bean during its own construction) is a barrier: the framework finishes it before
      * fan-out and consumers only read it. The leaf check uses the <em>initial</em> eligible
-     * set, the conservative choice.</li>
+     * set, the conservative choice. Such structural barriers are auto-detected only when
+     * {@code autoDetect} ({@code backgroundSharedInfraConsumers}) is set.</li>
+     * <li><b>Honor user-named barriers (Solution 2).</b> A bean named in
+     * {@code barrierNames} is treated as a barrier even when it is not in the forced-mainline
+     * set &mdash; the canonical case is a shared {@code DataSource} exposed only as a
+     * co-located {@code @Bean}, which the structural predicate above rejects. A named bean is
+     * honored only when it is acyclic and a genuine leaf (no sync dependency on a
+     * still-eligible bean, treating the whole named-barrier cohort as mainline); honored names
+     * are pinned to the main thread (removed from {@code eligible}) so "completed before
+     * fan-out" holds. Named barriers are honored regardless of {@code autoDetect}.</li>
      * <li><b>Free the pure barrier consumers from co-location.</b> A co-located
      * factory-method {@code @Bean} bean whose <em>every</em> sync dependency is a barrier
      * (and which depends on at least one) reads only already-completed leaves, so its
@@ -384,28 +462,61 @@ public class ParallelBootstrapBeanFactoryPostProcessor
             BeanDependencyGraph graph,
             Set<String> eligible,
             Set<String> cyclic,
-            Set<String> forcedMainline) {
-        // 1. Completed-leaf barriers: force-instantiated, acyclic, main-thread beans that
-        // pull no still-eligible bean during their own construction (computed against the
-        // initial eligible set, which is the conservative choice).
-        Set<String> barriers = new LinkedHashSet<>();
-        for (String node : graph.getNodes()) {
-            if (!forcedMainline.contains(node) || cyclic.contains(node)) {
-                continue;
-            }
-            boolean leaf = true;
-            for (String dependency : graph.getSyncDependencies(node)) {
-                if (eligible.contains(dependency)) {
-                    leaf = false;
-                    break;
+            Set<String> forcedMainline,
+            boolean autoDetect,
+            Set<String> barrierNames) {
+        // 1. Honor user-named completed-leaf barriers (Solution 2): pin them to the main
+        // thread so consumers may overlap. Each named bean must be acyclic and a genuine leaf
+        // (no sync dependency on a still-eligible bean); a dependency that is itself a named
+        // barrier does not disqualify it, since the whole named cohort moves to the main
+        // thread together.
+        Set<String> namedBarriers = new LinkedHashSet<>();
+        if (!barrierNames.isEmpty()) {
+            Set<String> candidateNamed = new LinkedHashSet<>();
+            for (String name : barrierNames) {
+                if (graph.getNodes().contains(name) && !cyclic.contains(name)) {
+                    candidateNamed.add(name);
                 }
             }
-            if (leaf) {
-                barriers.add(node);
+            for (String name : candidateNamed) {
+                boolean leaf = true;
+                for (String dependency : graph.getSyncDependencies(name)) {
+                    if (eligible.contains(dependency) && !candidateNamed.contains(dependency)) {
+                        leaf = false;
+                        break;
+                    }
+                }
+                if (leaf) {
+                    namedBarriers.add(name);
+                }
+            }
+            eligible.removeAll(namedBarriers);
+        }
+
+        // 2. Auto-detected structural barriers: force-instantiated, acyclic, main-thread beans
+        // that pull no still-eligible bean during their own construction (computed against the
+        // eligible set, which is the conservative choice). Only when backgroundSharedInfraConsumers
+        // is enabled; user-named barriers are always included.
+        Set<String> barriers = new LinkedHashSet<>(namedBarriers);
+        if (autoDetect) {
+            for (String node : graph.getNodes()) {
+                if (!forcedMainline.contains(node) || cyclic.contains(node)) {
+                    continue;
+                }
+                boolean leaf = true;
+                for (String dependency : graph.getSyncDependencies(node)) {
+                    if (eligible.contains(dependency)) {
+                        leaf = false;
+                        break;
+                    }
+                }
+                if (leaf) {
+                    barriers.add(node);
+                }
             }
         }
 
-        // 2. Free the pure barrier consumers from co-location so independent consumers of a
+        // 3. Free the pure barrier consumers from co-location so independent consumers of a
         // completed leaf can overlap. A consumer qualifies only when every one of its sync
         // dependencies is a barrier (it reads only already-completed leaves) and it is not a
         // barrier itself (freeing a barrier would break the "completed before fan-out"

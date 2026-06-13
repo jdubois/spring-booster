@@ -16,6 +16,7 @@
 
 package io.github.jdubois.springbooster;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashSet;
@@ -73,6 +74,10 @@ public final class ParallelBootstrapSettings {
 
     private final boolean backgroundSharedInfraConsumers;
 
+    private final Set<String> barrierBeanNames;
+
+    private final List<Set<String>> coBackgroundGroups;
+
     private ParallelBootstrapSettings(
             boolean enabled,
             int poolSize,
@@ -81,7 +86,9 @@ public final class ParallelBootstrapSettings {
             Set<String> backgroundBeanNames,
             boolean backgroundFactoryMethodBeans,
             boolean deferProviderEdges,
-            boolean backgroundSharedInfraConsumers) {
+            boolean backgroundSharedInfraConsumers,
+            Set<String> barrierBeanNames,
+            List<Set<String>> coBackgroundGroups) {
 
         this.enabled = enabled;
         this.poolSize = poolSize;
@@ -91,6 +98,8 @@ public final class ParallelBootstrapSettings {
         this.backgroundFactoryMethodBeans = backgroundFactoryMethodBeans;
         this.deferProviderEdges = deferProviderEdges;
         this.backgroundSharedInfraConsumers = backgroundSharedInfraConsumers;
+        this.barrierBeanNames = barrierBeanNames;
+        this.coBackgroundGroups = coBackgroundGroups;
     }
 
     /**
@@ -233,6 +242,65 @@ public final class ParallelBootstrapSettings {
     }
 
     /**
+     * The set of bean names the user has explicitly asserted are <em>completed-leaf
+     * barriers</em> &mdash; terminal infrastructure singletons that the framework finishes
+     * on the main thread before their consumers fan out, and which those consumers only
+     * <em>read</em>.
+     * <p>Defaults to the empty set. This is the user-named counterpart of the structural
+     * barrier predicate behind {@link #isBackgroundSharedInfraConsumers()}: that predicate
+     * only ever treats a <em>forced-mainline</em> bean (a factory bean, {@code depends-on}
+     * target, or configuration class) as a barrier, so a shared infrastructure singleton
+     * exposed purely as a co-located {@code @Bean} (a {@code DataSource} declared by a
+     * {@code @Configuration} class, for example) is not recognised and its independent
+     * consumers (Flyway and Liquibase) stay serialized on the main thread. Naming such a
+     * bean here makes the planner treat it as a barrier: it is pinned to the main thread and
+     * its mainline-ness is not propagated to its consumers, so a factory-method {@code @Bean}
+     * whose every sync dependency is a barrier is freed from co-location and may overlap its
+     * siblings on background threads.
+     * <p>A named bean is honored as a barrier only when it is structurally safe &mdash; it
+     * must be acyclic and a genuine leaf (it must not have a sync dependency on any
+     * still-backgroundable bean), so its own construction cannot pull a background bean
+     * mid-creation. A name that fails these checks is ignored. As with the other relaxations,
+     * a violated assumption fails fast with {@code BeanCurrentlyInCreationException} and the
+     * bootstrap falls back to sequential instantiation. Supplying a non-empty set activates
+     * the shared-infrastructure relaxation for the named barriers even when
+     * {@link #isBackgroundSharedInfraConsumers()} is {@code false}; in that case only the
+     * named barriers (not the auto-detected structural ones) are used.
+     * @return the explicit set of completed-leaf barrier bean names
+     * @see #isBackgroundSharedInfraConsumers()
+     */
+    public Set<String> getBarrierBeanNames() {
+        return this.barrierBeanNames;
+    }
+
+    /**
+     * Groups of {@code @Bean} factory-method bean names the user has asserted are
+     * <em>mutually independent</em> heavyweight beans that may be constructed concurrently.
+     * <p>Defaults to the empty list. This is the ergonomic, group-oriented wrapper over the
+     * per-bean {@link #getBackgroundBeanNames() allowlist}: for every member of a group the
+     * planner drops the configuration&rarr;{@code @Bean} co-location edge (so the bean may
+     * background even when a dynamic configuration is present), and it additionally drops any
+     * sync co-location edge <em>between two members of the same group</em>, so an
+     * asserted-independent pair (such as {@code entityManagerFactory} and
+     * {@code springSecurityFilterChain}, or {@code flyway} and {@code liquibase}) is not
+     * forced onto a single thread. Every {@code @Bean} bean outside the declared groups stays
+     * co-located on the main thread.
+     * <p>The relaxation only ever <em>removes</em> co-location edges; it never overrides a
+     * forced {@code depends-on} or factory-bean edge (those remain in the full dependency
+     * graph, so ordering, cycle detection, and the forced-mainline rule are unaffected) and
+     * it never bypasses {@link #getCandidateFilter()}, the opt-out attribute, or the
+     * connectivity-safe propagation. A group member that is a forced-mainline
+     * {@code depends-on}/factory target, in a cycle, or joined to the main thread by a genuine
+     * visible sync edge therefore stays on the main thread, and an invisible eager by-type
+     * pull still fails fast with {@code BeanCurrentlyInCreationException}.
+     * @return the declared co-background groups of mutually-independent bean names
+     * @see #getBackgroundBeanNames()
+     */
+    public List<Set<String>> getCoBackgroundGroups() {
+        return this.coBackgroundGroups;
+    }
+
+    /**
      * Create settings with sensible defaults: enabled, a pool size of twice the
      * number of available processors, the {@code parallel-bootstrap-} thread prefix,
      * and a candidate filter that accepts every bean.
@@ -301,6 +369,10 @@ public final class ParallelBootstrapSettings {
         private boolean deferProviderEdges = false;
 
         private boolean backgroundSharedInfraConsumers = false;
+
+        private Set<String> barrierBeanNames = Collections.emptySet();
+
+        private List<Set<String>> coBackgroundGroups = Collections.emptyList();
 
         private Builder() {}
 
@@ -431,6 +503,90 @@ public final class ParallelBootstrapSettings {
         }
 
         /**
+         * Set the explicit set of bean names to treat as <em>completed-leaf barriers</em>
+         * &mdash; terminal main-thread infrastructure singletons across which mainline-ness is
+         * not propagated to consumers, so independent consumers of one such bean may overlap
+         * on background threads. The names are copied defensively; passing {@code null} or an
+         * empty collection clears the set. This is the user-named override of the structural
+         * barrier predicate behind {@link #backgroundSharedInfraConsumers(boolean)}: it lets a
+         * shared singleton exposed only as a co-located {@code @Bean} (such as a
+         * {@code DataSource}) act as a barrier so that, for example, Flyway and Liquibase
+         * overlap. A named bean is honored only when it is acyclic and a genuine leaf;
+         * supplying a non-empty set activates the relaxation for the named barriers even when
+         * {@link #backgroundSharedInfraConsumers(boolean)} is {@code false}.
+         * @param barrierBeanNames the bean names to treat as completed-leaf barriers
+         * @return this builder
+         * @see ParallelBootstrapSettings#getBarrierBeanNames()
+         */
+        public Builder barrierBeanNames(@Nullable Collection<String> barrierBeanNames) {
+            // Treat null and empty identically: both mean "no named barriers".
+            this.barrierBeanNames = (barrierBeanNames == null || barrierBeanNames.isEmpty())
+                    ? Collections.emptySet()
+                    : Collections.unmodifiableSet(new LinkedHashSet<>(barrierBeanNames));
+            return this;
+        }
+
+        /**
+         * Set the bean names to treat as completed-leaf barriers, as a varargs convenience
+         * over {@link #barrierBeanNames(Collection)}.
+         * @param barrierBeanNames the bean names to treat as completed-leaf barriers
+         * @return this builder
+         * @see ParallelBootstrapSettings#getBarrierBeanNames()
+         */
+        public Builder barrierBeanNames(String... barrierBeanNames) {
+            return barrierBeanNames(List.of(barrierBeanNames));
+        }
+
+        /**
+         * Replace the declared <em>co-background groups</em> &mdash; groups of {@code @Bean}
+         * bean names the user asserts are mutually independent and may be constructed
+         * concurrently. For every group member the planner drops the configuration&rarr;
+         * {@code @Bean} co-location edge, and it additionally drops any sync co-location edge
+         * between two members of the same group, so asserted-independent heavyweights overlap
+         * rather than serialize. The groups are copied defensively; passing {@code null} or an
+         * empty collection clears them, and empty or singleton groups are ignored (they impose
+         * no inter-member constraint). This is the ergonomic, group-oriented wrapper over
+         * {@link #backgroundBeanNames(Collection)}; forced {@code depends-on}/factory edges and
+         * every other safety gate still apply.
+         * @param coBackgroundGroups the groups of mutually-independent bean names
+         * @return this builder
+         * @see ParallelBootstrapSettings#getCoBackgroundGroups()
+         */
+        public Builder coBackgroundGroups(@Nullable Collection<? extends Collection<String>> coBackgroundGroups) {
+            if (coBackgroundGroups == null || coBackgroundGroups.isEmpty()) {
+                this.coBackgroundGroups = Collections.emptyList();
+                return this;
+            }
+            List<Set<String>> groups = new ArrayList<>();
+            for (Collection<String> group : coBackgroundGroups) {
+                if (group != null && !group.isEmpty()) {
+                    groups.add(Collections.unmodifiableSet(new LinkedHashSet<>(group)));
+                }
+            }
+            this.coBackgroundGroups = Collections.unmodifiableList(groups);
+            return this;
+        }
+
+        /**
+         * Add a single <em>co-background group</em> of mutually-independent {@code @Bean} bean
+         * names to the declared groups, as a varargs convenience over
+         * {@link #coBackgroundGroups(Collection)}. A {@code null}, empty, or singleton group is
+         * ignored.
+         * @param members the mutually-independent bean names forming one group
+         * @return this builder
+         * @see ParallelBootstrapSettings#getCoBackgroundGroups()
+         */
+        public Builder coBackgroundGroup(String... members) {
+            if (members == null || members.length == 0) {
+                return this;
+            }
+            List<Set<String>> groups = new ArrayList<>(this.coBackgroundGroups);
+            groups.add(Collections.unmodifiableSet(new LinkedHashSet<>(List.of(members))));
+            this.coBackgroundGroups = Collections.unmodifiableList(groups);
+            return this;
+        }
+
+        /**
          * Build the immutable {@link ParallelBootstrapSettings} instance.
          * @return the immutable settings instance
          */
@@ -443,7 +599,9 @@ public final class ParallelBootstrapSettings {
                     this.backgroundBeanNames,
                     this.backgroundFactoryMethodBeans,
                     this.deferProviderEdges,
-                    this.backgroundSharedInfraConsumers);
+                    this.backgroundSharedInfraConsumers,
+                    this.barrierBeanNames,
+                    this.coBackgroundGroups);
         }
     }
 }

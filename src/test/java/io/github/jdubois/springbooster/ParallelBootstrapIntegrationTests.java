@@ -247,6 +247,43 @@ class ParallelBootstrapIntegrationTests {
         }
     }
 
+    @Test
+    void namedBarrierLetsCoLocatedConsumersOverlap() {
+        NamedBarrierConfig.consumerThreads.clear();
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            // dataSource is exposed only as a co-located @Bean of a dynamic configuration, so
+            // the structural barrier predicate does not recognise it. Naming it as a barrier
+            // pins it to the main thread and lets its two independent consumers overlap on
+            // background threads -- the Solution 2 named-barrier override.
+            ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                    .poolSize(4)
+                    .barrierBeanNames("dataSource")
+                    .build();
+            new ParallelBootstrapApplicationContextInitializer(settings).initialize(context);
+            context.register(NamedBarrierConfig.class);
+            context.refresh();
+
+            assertThat(context.getBean("consumerA")).isNotNull();
+            assertThat(context.getBean("consumerB")).isNotNull();
+            assertThat(NamedBarrierConfig.consumerThreads).anyMatch(name -> name.startsWith("parallel-bootstrap-"));
+        }
+    }
+
+    @Test
+    void coBackgroundGroupFromAnnotationBackgroundsMembersOfDynamicConfiguration() {
+        CoBackgroundGroupConfig.creationThreads.clear();
+        try (AnnotationConfigApplicationContext context =
+                new AnnotationConfigApplicationContext(CoBackgroundGroupConfig.class)) {
+            // The dynamic configuration would normally keep all four @Bean beans on the main
+            // thread. The two declared co-background groups drop their co-location edges, so
+            // the members may background. This also exercises the nested @CoBackgroundGroup
+            // annotation parsing in ParallelBootstrapRegistrar.
+            assertThat(context.getBeansOfType(RecordingBean.class)).hasSize(4);
+            assertThat(CoBackgroundGroupConfig.creationThreads)
+                    .anyMatch(name -> name.startsWith("parallel-bootstrap-"));
+        }
+    }
+
     @Configuration(proxyBeanMethods = false)
     @EnableParallelBootstrap
     static class EnabledConfig {
@@ -488,6 +525,73 @@ class ParallelBootstrapIntegrationTests {
     }
 
     static class SharedInfra {}
+
+    // A dynamic configuration (ApplicationContextAware) whose only link to the shared
+    // dataSource is a co-located @Bean, so the structural barrier predicate cannot detect
+    // it. Naming dataSource as a barrier lets consumerA and consumerB overlap.
+    @Configuration(proxyBeanMethods = false)
+    static class NamedBarrierConfig implements org.springframework.context.ApplicationContextAware {
+
+        static final Set<String> consumerThreads = ConcurrentHashMap.newKeySet();
+
+        @Override
+        public void setApplicationContext(org.springframework.context.ApplicationContext applicationContext) {}
+
+        @Bean
+        SharedInfra dataSource() {
+            return new SharedInfra();
+        }
+
+        @Bean
+        Object consumerA(SharedInfra dataSource) {
+            consumerThreads.add(Thread.currentThread().getName());
+            return new Object();
+        }
+
+        @Bean
+        Object consumerB(SharedInfra dataSource) {
+            consumerThreads.add(Thread.currentThread().getName());
+            return new Object();
+        }
+    }
+
+    // A dynamic configuration whose four mutually independent @Bean beans would all be
+    // co-located on the main thread. The two declared co-background groups assert their
+    // independence so the members may background; also exercises @CoBackgroundGroup parsing.
+    @Configuration(proxyBeanMethods = false)
+    @EnableParallelBootstrap(
+            poolSize = 4,
+            coBackgroundGroups = {
+                @EnableParallelBootstrap.CoBackgroundGroup({"one", "two"}),
+                @EnableParallelBootstrap.CoBackgroundGroup({"three", "four"})
+            })
+    static class CoBackgroundGroupConfig implements org.springframework.context.ApplicationContextAware {
+
+        static final Set<String> creationThreads = ConcurrentHashMap.newKeySet();
+
+        @Override
+        public void setApplicationContext(org.springframework.context.ApplicationContext applicationContext) {}
+
+        @Bean
+        RecordingBean one() {
+            return new RecordingBean(creationThreads);
+        }
+
+        @Bean
+        RecordingBean two() {
+            return new RecordingBean(creationThreads);
+        }
+
+        @Bean
+        RecordingBean three() {
+            return new RecordingBean(creationThreads);
+        }
+
+        @Bean
+        RecordingBean four() {
+            return new RecordingBean(creationThreads);
+        }
+    }
 
     @java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.RUNTIME)
     @java.lang.annotation.Target(java.lang.annotation.ElementType.TYPE)

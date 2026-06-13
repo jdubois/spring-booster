@@ -16,6 +16,8 @@
 
 package io.github.jdubois.springbooster;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import org.jspecify.annotations.Nullable;
 import org.springframework.beans.factory.config.BeanDefinition;
@@ -23,6 +25,7 @@ import org.springframework.beans.factory.support.AbstractBeanDefinition;
 import org.springframework.beans.factory.support.BeanDefinitionBuilder;
 import org.springframework.beans.factory.support.BeanDefinitionRegistry;
 import org.springframework.context.annotation.ImportBeanDefinitionRegistrar;
+import org.springframework.core.annotation.AnnotationAttributes;
 import org.springframework.core.type.AnnotationMetadata;
 
 /**
@@ -88,6 +91,23 @@ class ParallelBootstrapRegistrar implements ImportBeanDefinitionRegistrar {
             Object backgroundSharedInfraConsumers = attributes.get("backgroundSharedInfraConsumers");
             if (backgroundSharedInfraConsumers instanceof Boolean sharedInfraValue) {
                 builder.backgroundSharedInfraConsumers(sharedInfraValue);
+            }
+            Object barrierBeanNames = attributes.get("barrierBeanNames");
+            if (barrierBeanNames instanceof String[] names && names.length > 0) {
+                builder.barrierBeanNames(names);
+            }
+            Object coBackgroundGroups = attributes.get("coBackgroundGroups");
+            if (coBackgroundGroups instanceof AnnotationAttributes[] groups && groups.length > 0) {
+                List<List<String>> parsedGroups = new ArrayList<>();
+                for (AnnotationAttributes group : groups) {
+                    String[] members = group.getStringArray("value");
+                    if (members.length > 0) {
+                        parsedGroups.add(List.of(members));
+                    }
+                }
+                if (!parsedGroups.isEmpty()) {
+                    builder.coBackgroundGroups(parsedGroups);
+                }
             }
         }
         return builder.build();

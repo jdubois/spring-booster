@@ -135,4 +135,56 @@ public @interface EnableParallelBootstrap {
      * @see ParallelBootstrapSettings#isBackgroundSharedInfraConsumers()
      */
     boolean backgroundSharedInfraConsumers() default false;
+
+    /**
+     * An explicit set of bean names to treat as <em>completed-leaf barriers</em> &mdash;
+     * terminal main-thread infrastructure singletons across which mainline-ness is not
+     * propagated to consumers, so independent consumers of one such bean may overlap on
+     * background threads. Defaults to an empty array.
+     * <p>This is the user-named override of the structural barrier predicate behind
+     * {@link #backgroundSharedInfraConsumers()}: it lets a shared singleton exposed only as a
+     * co-located {@code @Bean} (such as a {@code DataSource}) act as a barrier so that, for
+     * example, Flyway and Liquibase overlap. A named bean is honored only when it is acyclic
+     * and a genuine leaf; supplying names here activates the relaxation for them even when
+     * {@link #backgroundSharedInfraConsumers()} is {@code false}.
+     * @return the explicit set of completed-leaf barrier bean names
+     * @see ParallelBootstrapSettings#getBarrierBeanNames()
+     */
+    String[] barrierBeanNames() default {};
+
+    /**
+     * Groups of {@code @Bean} bean names asserted to be <em>mutually independent</em>
+     * heavyweight beans that may be constructed concurrently. Defaults to an empty array.
+     * <p>For every member of a group the planner drops the configuration&rarr;{@code @Bean}
+     * co-location edge (like {@link #backgroundBeanNames()}), and additionally drops any sync
+     * co-location edge between two members of the same group, so an asserted-independent pair
+     * (such as {@code {entityManagerFactory, springSecurityFilterChain}} or
+     * {@code {flyway, liquibase}}) overlaps rather than serializes. Forced
+     * {@code depends-on}/factory edges and every other safety gate still apply, so a member
+     * pinned to the main thread stays there and an invisible eager by-type pull fails fast.
+     * Each {@link CoBackgroundGroup} holds one group's member names.
+     * @return the declared co-background groups
+     * @see ParallelBootstrapSettings#getCoBackgroundGroups()
+     */
+    CoBackgroundGroup[] coBackgroundGroups() default {};
+
+    /**
+     * A single <em>co-background group</em>: a set of {@code @Bean} bean names the user
+     * asserts are mutually independent heavyweight beans that may be constructed concurrently.
+     * Used as the element type of {@link EnableParallelBootstrap#coBackgroundGroups()}.
+     *
+     * @see EnableParallelBootstrap#coBackgroundGroups()
+     * @see ParallelBootstrapSettings#getCoBackgroundGroups()
+     */
+    @Target({})
+    @Retention(RetentionPolicy.RUNTIME)
+    @Documented
+    @interface CoBackgroundGroup {
+
+        /**
+         * The mutually-independent {@code @Bean} bean names forming this group.
+         * @return the group's bean names
+         */
+        String[] value();
+    }
 }
