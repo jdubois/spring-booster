@@ -20,9 +20,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import org.jspecify.annotations.Nullable;
-import org.springframework.beans.factory.config.BeanDefinition;
-import org.springframework.beans.factory.support.AbstractBeanDefinition;
-import org.springframework.beans.factory.support.BeanDefinitionBuilder;
 import org.springframework.beans.factory.support.BeanDefinitionRegistry;
 import org.springframework.context.annotation.ImportBeanDefinitionRegistrar;
 import org.springframework.core.annotation.AnnotationAttributes;
@@ -43,20 +40,10 @@ import org.springframework.core.type.AnnotationMetadata;
  */
 class ParallelBootstrapRegistrar implements ImportBeanDefinitionRegistrar {
 
-    private static final String BEAN_NAME = "io.github.jdubois.springbooster.internalParallelBootstrapPostProcessor";
-
     @Override
     public void registerBeanDefinitions(AnnotationMetadata importingClassMetadata, BeanDefinitionRegistry registry) {
-        if (registry.containsBeanDefinition(BEAN_NAME)) {
-            return;
-        }
         ParallelBootstrapSettings settings = buildSettings(importingClassMetadata);
-        AbstractBeanDefinition beanDefinition = BeanDefinitionBuilder.rootBeanDefinition(
-                        ParallelBootstrapBeanFactoryPostProcessor.class)
-                .addConstructorArgValue(settings)
-                .setRole(BeanDefinition.ROLE_INFRASTRUCTURE)
-                .getBeanDefinition();
-        registry.registerBeanDefinition(BEAN_NAME, beanDefinition);
+        ParallelBootstrapInfrastructure.register(registry, settings);
     }
 
     private ParallelBootstrapSettings buildSettings(AnnotationMetadata metadata) {
@@ -108,6 +95,22 @@ class ParallelBootstrapRegistrar implements ImportBeanDefinitionRegistrar {
                 if (!parsedGroups.isEmpty()) {
                     builder.coBackgroundGroups(parsedGroups);
                 }
+            }
+            Object bytecodeLookupDetection = attributes.get("bytecodeLookupDetection");
+            if (bytecodeLookupDetection instanceof Boolean bytecodeValue) {
+                builder.bytecodeLookupDetection(bytecodeValue);
+            }
+            Object buildTimePlanningEnabled = attributes.get("buildTimePlanningEnabled");
+            if (buildTimePlanningEnabled instanceof Boolean buildTimeValue) {
+                builder.buildTimePlanningEnabled(buildTimeValue);
+            }
+            Object runtimePlanningEnabled = attributes.get("runtimePlanningEnabled");
+            if (runtimePlanningEnabled instanceof Boolean runtimePlanningValue) {
+                builder.runtimePlanningEnabled(runtimePlanningValue);
+            }
+            Object generatedPlanRequired = attributes.get("generatedPlanRequired");
+            if (generatedPlanRequired instanceof Boolean generatedPlanRequiredValue) {
+                builder.generatedPlanRequired(generatedPlanRequiredValue);
             }
         }
         return builder.build();

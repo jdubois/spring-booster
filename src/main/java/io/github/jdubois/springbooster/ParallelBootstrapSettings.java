@@ -78,6 +78,14 @@ public final class ParallelBootstrapSettings {
 
     private final List<Set<String>> coBackgroundGroups;
 
+    private final boolean bytecodeLookupDetection;
+
+    private final boolean buildTimePlanningEnabled;
+
+    private final boolean runtimePlanningEnabled;
+
+    private final boolean generatedPlanRequired;
+
     private ParallelBootstrapSettings(
             boolean enabled,
             int poolSize,
@@ -88,7 +96,11 @@ public final class ParallelBootstrapSettings {
             boolean deferProviderEdges,
             boolean backgroundSharedInfraConsumers,
             Set<String> barrierBeanNames,
-            List<Set<String>> coBackgroundGroups) {
+            List<Set<String>> coBackgroundGroups,
+            boolean bytecodeLookupDetection,
+            boolean buildTimePlanningEnabled,
+            boolean runtimePlanningEnabled,
+            boolean generatedPlanRequired) {
 
         this.enabled = enabled;
         this.poolSize = poolSize;
@@ -100,6 +112,10 @@ public final class ParallelBootstrapSettings {
         this.backgroundSharedInfraConsumers = backgroundSharedInfraConsumers;
         this.barrierBeanNames = barrierBeanNames;
         this.coBackgroundGroups = coBackgroundGroups;
+        this.bytecodeLookupDetection = bytecodeLookupDetection;
+        this.buildTimePlanningEnabled = buildTimePlanningEnabled;
+        this.runtimePlanningEnabled = runtimePlanningEnabled;
+        this.generatedPlanRequired = generatedPlanRequired;
     }
 
     /**
@@ -301,6 +317,60 @@ public final class ParallelBootstrapSettings {
     }
 
     /**
+     * Whether the experimental build-time <em>bytecode lookup-detection</em> refinement
+     * is enabled.
+     * <p>Defaults to {@code false}. When enabled, Spring Booster scans the bytecode of
+     * {@code @Configuration} classes to decide whether they actually perform an invisible
+     * dynamic bean lookup (a {@code BeanFactory}/{@code ApplicationContext}
+     * {@code getBean}, an {@code ObjectProvider}/{@code ObjectFactory} dereference, or a
+     * CGLIB {@code @Bean} self-invocation). The reflective
+     * {@link DynamicConfigurationDetector} is deliberately conservative and classifies a
+     * configuration as <em>dynamic</em> from coarse structural signals alone (for example
+     * any <em>full</em> {@code @Configuration}); the bytecode scan can prove the absence
+     * of such lookups and downgrade those false positives to <em>pure</em>, so a context
+     * whose configurations never look beans up dynamically can background its
+     * {@code @Bean} factory-method beans. Inconclusive scans always stay dynamic, so the
+     * refinement only ever <em>relaxes</em> co-location when it has positive proof of
+     * purity.
+     * <p>This is opt-in and experimental: it is best suited to build-time
+     * (Spring AOT) planning, where the extra bytecode analysis is off the startup
+     * critical path.
+     * @return whether bytecode lookup-detection is enabled
+     * @see DynamicConfigurationDetector
+     * @see BytecodeLookupDetector
+     */
+    public boolean isBytecodeLookupDetection() {
+        return this.bytecodeLookupDetection;
+    }
+
+    /**
+     * Whether build-time AOT plan generation is enabled.
+     * @return whether build-time planning is enabled
+     */
+    public boolean isBuildTimePlanningEnabled() {
+        return this.buildTimePlanningEnabled;
+    }
+
+    /**
+     * Whether runtime graph computation may be used when no valid generated plan is
+     * available.
+     * @return whether runtime planning is enabled
+     */
+    public boolean isRuntimePlanningEnabled() {
+        return this.runtimePlanningEnabled;
+    }
+
+    /**
+     * Whether a generated build-time plan is required. When {@code true}, Spring
+     * Booster never falls back to runtime planning and simply keeps bootstrap
+     * sequential if the generated plan is missing or stale.
+     * @return whether a generated plan is required
+     */
+    public boolean isGeneratedPlanRequired() {
+        return this.generatedPlanRequired;
+    }
+
+    /**
      * Create settings with sensible defaults: enabled, a pool size of twice the
      * number of available processors, the {@code parallel-bootstrap-} thread prefix,
      * and a candidate filter that accepts every bean.
@@ -342,6 +412,16 @@ public final class ParallelBootstrapSettings {
     }
 
     /**
+     * Whether the candidate filter is still the default accept-all predicate. Build-time
+     * AOT plan generation is only safe to emit for the default filter, because a custom
+     * {@link Predicate} cannot be serialized into the generated plan and re-evaluated at
+     * runtime.
+     */
+    boolean hasDefaultCandidateFilter() {
+        return this.candidateFilter == Builder.DEFAULT_CANDIDATE_FILTER;
+    }
+
+    /**
      * Determine whether the given bean definition has explicitly opted <em>into</em>
      * background initialization via {@link #FORCE_BACKGROUND_ATTRIBUTE}.
      */
@@ -360,7 +440,9 @@ public final class ParallelBootstrapSettings {
 
         private String threadNamePrefix = "parallel-bootstrap-";
 
-        private Predicate<String> candidateFilter = beanName -> true;
+        static final Predicate<String> DEFAULT_CANDIDATE_FILTER = beanName -> true;
+
+        private Predicate<String> candidateFilter = DEFAULT_CANDIDATE_FILTER;
 
         private Set<String> backgroundBeanNames = Collections.emptySet();
 
@@ -373,6 +455,14 @@ public final class ParallelBootstrapSettings {
         private Set<String> barrierBeanNames = Collections.emptySet();
 
         private List<Set<String>> coBackgroundGroups = Collections.emptyList();
+
+        private boolean bytecodeLookupDetection = false;
+
+        private boolean buildTimePlanningEnabled = true;
+
+        private boolean runtimePlanningEnabled = true;
+
+        private boolean generatedPlanRequired = false;
 
         private Builder() {}
 
@@ -587,6 +677,56 @@ public final class ParallelBootstrapSettings {
         }
 
         /**
+         * Enable or disable the experimental build-time bytecode lookup-detection
+         * refinement. Defaults to {@code false}. When enabled, {@code @Configuration}
+         * classes are scanned at the bytecode level to confirm whether they actually
+         * perform an invisible dynamic bean lookup, allowing the planner to downgrade a
+         * conservatively-classified <em>dynamic</em> configuration to <em>pure</em> when
+         * the scan proves no such lookup exists.
+         * @param bytecodeLookupDetection whether bytecode lookup-detection is enabled
+         * @return this builder
+         * @see ParallelBootstrapSettings#isBytecodeLookupDetection()
+         */
+        public Builder bytecodeLookupDetection(boolean bytecodeLookupDetection) {
+            this.bytecodeLookupDetection = bytecodeLookupDetection;
+            return this;
+        }
+
+        /**
+         * Set whether build-time AOT planning is enabled. Defaults to {@code true}, so
+         * Spring Booster emits a reusable generated plan during AOT processing whenever
+         * the settings are AOT-compatible.
+         * @param buildTimePlanningEnabled whether build-time planning is enabled
+         * @return this builder
+         */
+        public Builder buildTimePlanningEnabled(boolean buildTimePlanningEnabled) {
+            this.buildTimePlanningEnabled = buildTimePlanningEnabled;
+            return this;
+        }
+
+        /**
+         * Set whether runtime graph computation may be used when no valid generated
+         * plan is available. Defaults to {@code true}.
+         * @param runtimePlanningEnabled whether runtime planning is enabled
+         * @return this builder
+         */
+        public Builder runtimePlanningEnabled(boolean runtimePlanningEnabled) {
+            this.runtimePlanningEnabled = runtimePlanningEnabled;
+            return this;
+        }
+
+        /**
+         * Set whether a generated plan is required. Defaults to {@code false}, which
+         * allows falling back to runtime planning when enabled.
+         * @param generatedPlanRequired whether a generated plan is required
+         * @return this builder
+         */
+        public Builder generatedPlanRequired(boolean generatedPlanRequired) {
+            this.generatedPlanRequired = generatedPlanRequired;
+            return this;
+        }
+
+        /**
          * Build the immutable {@link ParallelBootstrapSettings} instance.
          * @return the immutable settings instance
          */
@@ -601,7 +741,11 @@ public final class ParallelBootstrapSettings {
                     this.deferProviderEdges,
                     this.backgroundSharedInfraConsumers,
                     this.barrierBeanNames,
-                    this.coBackgroundGroups);
+                    this.coBackgroundGroups,
+                    this.bytecodeLookupDetection,
+                    this.buildTimePlanningEnabled,
+                    this.runtimePlanningEnabled,
+                    this.generatedPlanRequired);
         }
     }
 }

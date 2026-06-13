@@ -148,7 +148,12 @@ public class ParallelBootstrapBeanFactoryPostProcessor
             return;
         }
         try {
-            List<String> candidates = planCandidates(beanFactory);
+            List<String> candidates = findPreMarkedCandidates(beanFactory);
+            if (!candidates.isEmpty()) {
+                logger.debug("Using pre-marked Spring Booster background-init beans");
+            } else {
+                candidates = resolveCandidatePlan(beanFactory);
+            }
             if (candidates.isEmpty()) {
                 logger.debug("No eligible beans for parallel bootstrap; using sequential instantiation");
                 return;
@@ -167,6 +172,95 @@ public class ParallelBootstrapBeanFactoryPostProcessor
             // Kill-switch / graceful fallback: never let planning break the context.
             logger.warn("Parallel bootstrap planning failed; falling back to sequential instantiation", ex);
         }
+    }
+
+    /**
+     * Resolve the background candidates for the current bean factory, preferring a
+     * compatible build-time generated plan and falling back to runtime planning.
+     *
+     * <p>Resolution order:
+     * <ol>
+     * <li>if build-time planning is enabled and a generated plan is present and its
+     * fingerprints still match, reuse the precomputed candidates;</li>
+     * <li>if a generated plan is required but missing or stale, stay sequential;</li>
+     * <li>otherwise, unless runtime planning is disabled, recompute the plan at runtime
+     * via {@link #planCandidates}.</li>
+     * </ol>
+     */
+    private List<String> resolveCandidatePlan(ConfigurableListableBeanFactory beanFactory) {
+        ParallelBootstrapPlanner planner = new ParallelBootstrapPlanner(this.settings);
+        if (this.settings.isBuildTimePlanningEnabled()) {
+            ParallelBootstrapPlan generatedPlan = loadGeneratedPlan(beanFactory);
+            if (generatedPlan != null) {
+                if (planner.isPlanCompatible(beanFactory, generatedPlan)) {
+                    logger.debug("Using generated Spring Booster bootstrap plan");
+                    return generatedPlan.getCandidateBeanNames();
+                }
+                logger.info("Generated Spring Booster bootstrap plan fingerprint does not match current settings"
+                        + " or bean definitions; ignoring it");
+            }
+            if (this.settings.isGeneratedPlanRequired()) {
+                logger.warn("Generated Spring Booster bootstrap plan required but not found or incompatible;"
+                        + " using sequential bootstrap. Ensure AOT processing completed successfully or set"
+                        + " generatedPlanRequired to false");
+                return List.of();
+            }
+        }
+        if (!this.settings.isRuntimePlanningEnabled()) {
+            logger.debug("Runtime bootstrap planning disabled; using sequential bootstrap");
+            return List.of();
+        }
+        return planCandidates(beanFactory);
+    }
+
+    private @Nullable ParallelBootstrapPlan loadGeneratedPlan(ConfigurableListableBeanFactory beanFactory) {
+        ParallelBootstrapPlan plan = loadGeneratedPlan(beanFactory.getBeanClassLoader());
+        if (plan != null) {
+            return plan;
+        }
+        plan = loadGeneratedPlan(Thread.currentThread().getContextClassLoader());
+        if (plan != null) {
+            return plan;
+        }
+        return loadGeneratedPlan(getClass().getClassLoader());
+    }
+
+    private @Nullable ParallelBootstrapPlan loadGeneratedPlan(@Nullable ClassLoader classLoader) {
+        if (classLoader == null) {
+            return null;
+        }
+        try (java.io.InputStream inputStream =
+                classLoader.getResourceAsStream(ParallelBootstrapPlan.RESOURCE_LOCATION)) {
+            if (inputStream == null) {
+                return null;
+            }
+            byte[] content = inputStream.readAllBytes();
+            return ParallelBootstrapPlan.fromResourceContent(
+                    new String(content, java.nio.charset.StandardCharsets.UTF_8));
+        } catch (Exception ex) {
+            logger.info("Failed to read generated Spring Booster bootstrap plan; ignoring it", ex);
+            return null;
+        }
+    }
+
+    /**
+     * Collect the singleton bean names already marked for background initialization,
+     * typically by the AOT-generated initializer that pre-marks the build-time plan's
+     * candidates. When present, these are reused directly without recomputing the graph.
+     */
+    private List<String> findPreMarkedCandidates(ConfigurableListableBeanFactory beanFactory) {
+        List<String> candidates = new ArrayList<>();
+        for (String beanName : beanFactory.getBeanDefinitionNames()) {
+            BeanDefinition beanDefinition = safeGetBeanDefinition(beanFactory, beanName);
+            if (beanDefinition instanceof AbstractBeanDefinition abstractBeanDefinition
+                    && abstractBeanDefinition.isBackgroundInit()
+                    && !beanDefinition.isAbstract()
+                    && beanDefinition.isSingleton()
+                    && !beanDefinition.isLazyInit()) {
+                candidates.add(beanName);
+            }
+        }
+        return candidates;
     }
 
     /**
@@ -211,7 +305,11 @@ public class ParallelBootstrapBeanFactoryPostProcessor
                 || !this.settings.getBarrierBeanNames().isEmpty();
         boolean colocateFactoryMethodBeans = !this.settings.isBackgroundFactoryMethodBeans() || relaxSharedInfra;
         BeanDependencyGraph graph = BeanDependencyGraph.build(
-                beanFactory, allNames, colocateFactoryMethodBeans, this.settings.isDeferProviderEdges());
+                beanFactory,
+                allNames,
+                colocateFactoryMethodBeans,
+                this.settings.isDeferProviderEdges(),
+                this.settings.isBytecodeLookupDetection());
 
         // Drop the configuration -> @Bean co-location edge for any bean the user has
         // explicitly allow-listed for background initialization (by name via
@@ -570,7 +668,7 @@ public class ParallelBootstrapBeanFactoryPostProcessor
      * {@code getBeansWithAnnotation(EnableWebSecurity.class)}).</li>
      * </ul>
      */
-    private static Set<String> collectForcedMainlineBeans(ConfigurableListableBeanFactory beanFactory) {
+    static Set<String> collectForcedMainlineBeans(ConfigurableListableBeanFactory beanFactory) {
         Set<String> forced = new HashSet<>();
         for (String beanName : beanFactory.getBeanDefinitionNames()) {
             BeanDefinition bd = safeGetMergedBeanDefinition(beanFactory, beanName);

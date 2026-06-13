@@ -153,6 +153,32 @@ final class BeanDependencyGraph {
             Collection<String> beanNames,
             boolean colocateFactoryMethodBeans,
             boolean deferProviderEdges) {
+        return build(beanFactory, beanNames, colocateFactoryMethodBeans, deferProviderEdges, false);
+    }
+
+    /**
+     * Build a dependency graph from the given bean factory, restricted to the
+     * supplied set of bean names (typically all registered bean definitions). Edges
+     * that point to beans outside the supplied set are ignored.
+     * @param beanFactory the bean factory to introspect
+     * @param beanNames the bean names to include as graph nodes
+     * @param colocateFactoryMethodBeans whether to add factory&rarr;bean co-location
+     * edges that keep every {@code @Bean} bean on its configuration's thread (see
+     * {@link #addFactoryColocationEdges})
+     * @param deferProviderEdges whether by-type edges reached only through an
+     * {@code ObjectProvider}/{@code ObjectFactory}/{@code Provider} wrapper or a
+     * {@code @Lazy} injection point are treated as <em>deferred</em>
+     * @param bytecodeLookupDetection whether the experimental build-time bytecode
+     * lookup-detection refinement is enabled when classifying configurations as dynamic
+     * (see {@link DynamicConfigurationDetector#isDynamicConfiguration})
+     * @return the resulting dependency graph
+     */
+    static BeanDependencyGraph build(
+            ConfigurableListableBeanFactory beanFactory,
+            Collection<String> beanNames,
+            boolean colocateFactoryMethodBeans,
+            boolean deferProviderEdges,
+            boolean bytecodeLookupDetection) {
         Set<String> nodes = new LinkedHashSet<>(beanNames);
         Map<String, Set<String>> dependencies = new HashMap<>(nodes.size());
         Map<String, Set<String>> syncDependencies = new HashMap<>(nodes.size());
@@ -178,7 +204,7 @@ final class BeanDependencyGraph {
             syncDependencies.put(beanName, syncEdges);
         }
         if (colocateFactoryMethodBeans) {
-            addFactoryColocationEdges(beanFactory, nodes, syncDependencies);
+            addFactoryColocationEdges(beanFactory, nodes, syncDependencies, bytecodeLookupDetection);
         }
         return new BeanDependencyGraph(nodes, dependencies, syncDependencies);
     }
@@ -234,7 +260,10 @@ final class BeanDependencyGraph {
      * bean depends on its factory).
      */
     private static void addFactoryColocationEdges(
-            ConfigurableListableBeanFactory beanFactory, Set<String> nodes, Map<String, Set<String>> syncDependencies) {
+            ConfigurableListableBeanFactory beanFactory,
+            Set<String> nodes,
+            Map<String, Set<String>> syncDependencies,
+            boolean bytecodeLookupDetection) {
         // Group every factory-method bean under its configuration (factory) bean, and
         // record whether any configuration in the context is dynamic.
         Map<String, Set<String>> beansByFactory = new LinkedHashMap<>();
@@ -255,8 +284,8 @@ final class BeanDependencyGraph {
         }
 
         boolean anyDynamicConfiguration = beansByFactory.keySet().stream()
-                .anyMatch(factoryBeanName ->
-                        DynamicConfigurationDetector.isDynamicConfiguration(beanFactory, factoryBeanName));
+                .anyMatch(factoryBeanName -> DynamicConfigurationDetector.isDynamicConfiguration(
+                        beanFactory, factoryBeanName, bytecodeLookupDetection));
         if (!anyDynamicConfiguration) {
             // No configuration performs invisible by-type lookups, so no @Bean bean can be
             // pulled by type on the main thread by a configuration that static analysis

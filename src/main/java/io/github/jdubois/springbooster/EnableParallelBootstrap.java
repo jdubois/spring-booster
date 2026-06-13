@@ -169,6 +169,40 @@ public @interface EnableParallelBootstrap {
     CoBackgroundGroup[] coBackgroundGroups() default {};
 
     /**
+     * Whether the experimental build-time bytecode lookup-detection refinement is
+     * enabled. Defaults to {@code false}. When {@code true}, {@code @Configuration}
+     * classes are scanned at the bytecode level to confirm whether they actually perform
+     * an invisible dynamic bean lookup, so a configuration conservatively classified as
+     * dynamic can be downgraded to pure (allowing its {@code @Bean} beans to background)
+     * when the scan proves no such lookup exists.
+     * @return whether bytecode lookup-detection is enabled
+     * @see ParallelBootstrapSettings#isBytecodeLookupDetection()
+     */
+    boolean bytecodeLookupDetection() default false;
+
+    /**
+     * Whether Spring Booster should precompute a reusable build-time plan during
+     * Spring AOT processing. Defaults to {@code true}.
+     * @return whether build-time planning is enabled
+     */
+    boolean buildTimePlanningEnabled() default true;
+
+    /**
+     * Whether Spring Booster may compute the bean graph at runtime when no valid
+     * generated plan is available. Defaults to {@code true}.
+     * @return whether runtime planning is enabled
+     */
+    boolean runtimePlanningEnabled() default true;
+
+    /**
+     * Whether a generated build-time plan is required. When {@code true}, Spring
+     * Booster skips parallel bootstrap rather than recomputing the plan at runtime if
+     * the generated plan is missing or stale.
+     * @return whether a generated plan is required
+     */
+    boolean generatedPlanRequired() default false;
+
+    /**
      * A single <em>co-background group</em>: a set of {@code @Bean} bean names the user
      * asserts are mutually independent heavyweight beans that may be constructed concurrently.
      * Used as the element type of {@link EnableParallelBootstrap#coBackgroundGroups()}.

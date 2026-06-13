@@ -109,6 +109,50 @@ final class DynamicConfigurationDetector {
      * is pure (its {@code @Bean} beans may be backgrounded)
      */
     static boolean isDynamicConfiguration(ConfigurableListableBeanFactory beanFactory, String factoryBeanName) {
+        return isDynamicConfiguration(beanFactory, factoryBeanName, false);
+    }
+
+    /**
+     * Determine whether the given factory bean is a <em>dynamic</em> configuration that
+     * must keep its {@code @Bean} beans co-located on the main thread, optionally applying
+     * the experimental build-time {@linkplain BytecodeLookupDetector bytecode
+     * lookup-detection} refinement.
+     *
+     * <p>The reflective classification is computed first. When
+     * {@code bytecodeLookupDetection} is {@code false} (the default) that reflective result
+     * is returned unchanged. When it is {@code true}, a configuration the reflective pass
+     * flagged as <em>dynamic</em> is re-examined at the bytecode level: if the scan
+     * <em>proves</em> the configuration performs no dynamic bean lookup, it is downgraded to
+     * <em>pure</em>. An inconclusive scan leaves the conservative <em>dynamic</em>
+     * classification in place, so the refinement only ever relaxes a false positive and is
+     * always safe.
+     * @param beanFactory the bean factory to introspect
+     * @param factoryBeanName the name of the configuration / factory bean
+     * @param bytecodeLookupDetection whether to apply the bytecode lookup-detection refinement
+     * @return {@code true} if the configuration is dynamic (co-locate), {@code false} if it
+     * is pure (its {@code @Bean} beans may be backgrounded)
+     */
+    static boolean isDynamicConfiguration(
+            ConfigurableListableBeanFactory beanFactory, String factoryBeanName, boolean bytecodeLookupDetection) {
+        boolean reflectiveDynamic = isReflectivelyDynamic(beanFactory, factoryBeanName);
+        if (!reflectiveDynamic || !bytecodeLookupDetection) {
+            return reflectiveDynamic;
+        }
+        Class<?> type = safeGetType(beanFactory, factoryBeanName);
+        if (type == null) {
+            // Cannot introspect the configuration: stay safe and co-locate.
+            return true;
+        }
+        try {
+            // The bytecode scan only ever downgrades a reflective false positive to pure;
+            // an inconclusive scan keeps the conservative dynamic classification.
+            return BytecodeLookupDetector.detect(type) != BytecodeLookupDetector.Result.PURE;
+        } catch (Throwable ex) {
+            return true;
+        }
+    }
+
+    private static boolean isReflectivelyDynamic(ConfigurableListableBeanFactory beanFactory, String factoryBeanName) {
         try {
             BeanDefinition bd = safeGetMergedBeanDefinition(beanFactory, factoryBeanName);
             if (bd != null && CONFIGURATION_CLASS_FULL.equals(bd.getAttribute(CONFIGURATION_CLASS_ATTRIBUTE))) {
