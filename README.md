@@ -126,6 +126,37 @@ This reintroduces the risk that a main-thread bean pulls a backgrounded `@Bean` 
 by type through a call the analysis cannot see, so pair it with a `candidateFilter`
 scoped to beans you know are safe.
 
+### Profiling startup
+
+Spring Booster ships an opt-in **startup profiler** that records, for every singleton
+created during context refresh, the thread it was created on and the inclusive
+wall-clock time its creation took. It logs a summary of the slowest beans once the
+context has refreshed, turning tuning from guesswork into data — the slowest entries
+are a good starting point for deciding which heavyweight beans are worth backgrounding.
+
+```java
+@EnableParallelBootstrap(profileStartup = true)
+// or
+ParallelBootstrapSettings.builder().profileStartup(true).build();
+```
+
+Profiling never changes application semantics and is independent of the global
+kill-switch, so you can profile a **sequential baseline** by combining
+`profileStartup(true)` with `enabled(false)` and compare it against a parallel run. The
+installed `BeanStartupProfiler` is also registered as a singleton, so you can inspect
+the per-bean records programmatically after refresh:
+
+```java
+BeanStartupProfiler profiler = context.getBean(BeanStartupProfiler.class);
+profiler.getRecords().forEach(record ->
+        System.out.printf("%s %.2f ms [%s]%n",
+                record.beanName(), record.durationMillis(), record.threadName()));
+```
+
+> ℹ️ Durations are **inclusive**: a bean's measurement spans from the start of its
+> instantiation to the end of its initialization and therefore also covers the creation
+> of any dependencies created in between (mirroring nested `ApplicationStartup` steps).
+
 ## Requirements
 
 | | Version |

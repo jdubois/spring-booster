@@ -333,6 +333,30 @@ cost of reintroducing the invisible by-type pull risk, so it should be paired wi
 * The **global kill-switch** (`enabled = false`) registers the post-processor but
   makes it a no-op, allowing the feature to be disabled without code removal.
 
+### 6.1 Startup profiling (observability)
+
+An opt-in startup profiler (`profileStartup = true`) provides the measurement
+foundation for tuning. It is implemented as a `BeanStartupProfiler`, an
+`InstantiationAwareBeanPostProcessor` that the post-processor installs (via
+`addBeanPostProcessor`) and registers as a manual singleton:
+
+* It stamps a start time in `postProcessBeforeInstantiation` and computes the elapsed
+  time in `postProcessAfterInitialization`, recording per bean the **creating thread**,
+  the **inclusive wall-clock duration**, and whether the thread was a bootstrap
+  background thread (derived from the configured thread-name prefix). It never alters the
+  beans it observes — `postProcessBeforeInstantiation` returns `null` and
+  `postProcessAfterInitialization` returns the bean unchanged — so profiling cannot
+  change application semantics (design goal #1).
+* Durations are **inclusive** (start of instantiation to end of initialization, covering
+  nested dependency creation), mirroring how nested `ApplicationStartup` steps account
+  for time; the slowest entries identify candidates worth backgrounding.
+* A `ContextRefreshedEvent` listener logs a summary of the slowest beans after refresh.
+  The profiler singleton is retrievable (`context.getBean(BeanStartupProfiler.class)`)
+  for programmatic inspection of the records.
+* Profiling is **independent of the kill-switch**, so combining `profileStartup(true)`
+  with `enabled(false)` measures a sequential baseline for comparison. Installation is
+  wrapped in defensive `try/catch`, so a profiler failure can never break the context.
+
 ---
 
 ## 7. Build, test, and release
@@ -358,7 +382,10 @@ cost of reintroducing the invisible by-type pull risk, so it should be paired wi
   from a main-thread bean), and `ParallelBootstrapIntegrationTests` (real context
   refresh, bean wiring, bootstrap-thread usage, executor shutdown, programmatic
   initializer, and an end-to-end reproduction proving a main-thread by-type consumer
-  no longer triggers `BeanCurrentlyInCreationException`).
+  no longer triggers `BeanCurrentlyInCreationException`). `BeanStartupProfilerTests`
+  and additional `ParallelBootstrapIntegrationTests` cover the opt-in startup profiler
+  (per-bean thread/duration recording, background-thread classification, the slowest-bean
+  report, and use as a sequential baseline under the kill-switch).
 
 ### 7.1 Conventions
 
@@ -369,7 +396,7 @@ cost of reintroducing the invisible by-type pull risk, so it should be paired wi
 * Null-safety via JSpecify (`@NullMarked` at package level, `@Nullable` on members).
 * Single package; keep public surface minimal (`EnableParallelBootstrap`,
   `ParallelBootstrapApplicationContextInitializer`, `ParallelBootstrapSettings`,
-  `ParallelBootstrapBeanFactoryPostProcessor`).
+  `ParallelBootstrapBeanFactoryPostProcessor`, `BeanStartupProfiler`).
 
 ---
 
