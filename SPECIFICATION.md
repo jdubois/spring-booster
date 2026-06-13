@@ -99,10 +99,10 @@ All code lives in a single package: `io.github.jdubois.springbooster`.
 
 | Class | Responsibility |
 |---|---|
-| `EnableParallelBootstrap` | Public opt-in annotation. `@Import`s the registrar. Carries tuning attributes (`enabled`, `poolSize`, `threadNamePrefix`, `backgroundFactoryMethodBeans`). |
+| `EnableParallelBootstrap` | Public opt-in annotation. `@Import`s the registrar. Carries tuning attributes (`enabled`, `poolSize`, `threadNamePrefix`, `backgroundFactoryMethodBeans`, `backgroundSharedInfraConsumers`). |
 | `ParallelBootstrapRegistrar` | `ImportBeanDefinitionRegistrar` activated by the annotation. Translates annotation attributes into `ParallelBootstrapSettings` and registers the post-processor as an infrastructure bean (idempotently). |
 | `ParallelBootstrapApplicationContextInitializer` | `ApplicationContextInitializer` entry point for programmatic / Spring Boot (`spring.factories`) registration, with no need for the annotation. |
-| `ParallelBootstrapSettings` | Immutable configuration (pool size, thread-name prefix, kill-switch, candidate `Predicate`, `backgroundFactoryMethodBeans` toggle). Built via a fluent `Builder`. Defines the per-bean opt-out attribute. |
+| `ParallelBootstrapSettings` | Immutable configuration (pool size, thread-name prefix, kill-switch, candidate `Predicate`, `backgroundFactoryMethodBeans` toggle, `backgroundSharedInfraConsumers` toggle). Built via a fluent `Builder`. Defines the per-bean opt-out attribute. |
 | `BeanDependencyGraph` | Pure in-memory dependency graph of the bean definitions. Models both declared references **and** by-type autowiring edges (via `AutowiredEdgeResolver`), classifying each edge as *forced* or *sync*. Provides topological layering (Kahn) and cycle detection (Tarjan). Never triggers bean creation. |
 | `AutowiredEdgeResolver` | Reflectively resolves the by-type / `@Autowired` / `ObjectProvider` dependency edges that the declarations do not reveal (`@Bean` method params, autowired constructors, `@Autowired` fields/methods), unwrapping `ObjectProvider`/`ObjectFactory`/`Provider`/`Optional`/collections/maps/arrays. Resolves candidate names with eager init disabled, so it never instantiates a bean. |
 | `ParallelBootstrapBeanFactoryPostProcessor` | The engine. Plans candidates (connectivity-safe selection), marks them for background init, installs the bounded executor, and registers a listener to shut it down after refresh. |
@@ -299,6 +299,42 @@ co-location edges, making `@Bean` beans eligible again for maximum parallelism �
 cost of reintroducing the invisible by-type pull risk, so it should be paired with a
 `candidateFilter` scoped to beans known to be safe.
 
+### 5.2.2 Completed-leaf barrier relaxation (`backgroundSharedInfraConsumers`)
+
+Mainline propagation (§5.2) is normally **symmetric**: a bean joined by a sync edge —
+in *either* direction — to a main-thread bean is itself forced onto the main thread.
+That conflates two cases:
+
+* **In-flight entanglement (unsafe).** The neighbour is still being created on the main
+  thread when this bean runs → real `BeanCurrentlyInCreationException` risk. Must stay
+  mainline.
+* **Completed-leaf dependency (safe).** The neighbour is a *terminal* infrastructure
+  singleton (e.g. the `DataSource`) that the framework fully finishes on the main thread
+  **before** this bean is touched, and this bean only *reads* it. Two such independent
+  consumers can run concurrently on background threads.
+
+The opt-in `backgroundSharedInfraConsumers` flag carves out the second case as a
+narrowly-defined exception. A main-thread bean `B` is a **completed-leaf barrier** —
+across which mainline-ness is *not* propagated to its dependents — only when both hold:
+
+1. **Force-instantiated on the main thread & acyclic.** `B` is in the forced-mainline
+   set (factory bean, `depends-on` target, or configuration class) and is not in any
+   cycle, so the framework is guaranteed to create it on the main thread.
+2. **Leaf with respect to background candidates.** `B` has no sync dependency on any
+   currently-eligible bean, so its own construction cannot pull a background bean
+   mid-creation.
+
+Only the **B → dependent** direction is exempted; the reverse (a main-thread bean that
+*depends on* a candidate) still propagates, because that is the genuine in-flight pull.
+Because a dependent `D` keeps `B` as a construction dependency, `B` is ordered strictly
+earlier in the topological layering (§ `computeLayers`), so "completed before fan-out"
+holds structurally rather than by assumption. The barrier set only ever *removes*
+propagation — it never adds edges — so it cannot create spurious cycles or perturb
+layering. The relaxation is **off by default**; if the predicate is even slightly
+violated the bean stays mainline, and the `BeanCurrentlyInCreationException` fast-fail
+remains the backstop (design goal #1). For `@Bean` consumers such as Flyway/Liquibase,
+enable `backgroundFactoryMethodBeans` as well — the two flags are orthogonal.
+
 ### 5.3 Consequences
 
 * All **declaration-level** relationships are now modelled and made safe: explicit
@@ -328,6 +364,8 @@ cost of reintroducing the invisible by-type pull risk, so it should be paired wi
   applications.
 * **`@Lazy` / `ObjectProvider` guidance or auto-rewriting** for mainline dependents
   of background beans, which could let more beans be parallelized safely.
+  *(Partially addressed for the shared-infrastructure-leaf shape by the
+  `backgroundSharedInfraConsumers` relaxation — see §5.2.2.)*
 * The `benchmark/` directory provides a reproducible Spring Petclinic startup
   harness; extending it to apps with many independent heavyweight beans would better
   quantify the win.

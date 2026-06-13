@@ -126,6 +126,37 @@ This reintroduces the risk that a main-thread bean pulls a backgrounded `@Bean` 
 by type through a call the analysis cannot see, so pair it with a `candidateFilter`
 scoped to beans you know are safe.
 
+### Backgrounding shared-infrastructure consumers
+
+Some heavyweight beans are independent of each other yet share a single
+fully-constructed infrastructure singleton — the classic example is Flyway and
+Liquibase both reading the same `DataSource`. Normally the shared `DataSource` (a
+main-thread `depends-on` target) drags both consumers back onto the main thread,
+serializing them. The opt-in `backgroundSharedInfraConsumers` flag teaches the
+planner that *depending on an already-finished singleton is safe*, so those
+independent consumers can run concurrently:
+
+```java
+@EnableParallelBootstrap(
+        backgroundFactoryMethodBeans = true,
+        backgroundSharedInfraConsumers = true)
+// or
+ParallelBootstrapSettings.builder()
+        .backgroundFactoryMethodBeans(true)
+        .backgroundSharedInfraConsumers(true)
+        .build();
+```
+
+The relaxation is deliberately narrow: it only exempts a *completed-leaf barrier* —
+a forced-mainline, acyclic, terminal singleton with no background dependency of its
+own — from propagating main-thread-ness to the beans that merely *read* it. The
+reverse direction (a main-thread bean that depends on a candidate) is never exempted,
+because that is a genuine in-flight pull. It is off by default and falls back to
+sequential whenever the predicate is even slightly violated, so it stays faithful to
+the library's "sequential when in doubt" design goal. For `@Bean` consumers like
+Flyway/Liquibase, enable `backgroundFactoryMethodBeans` as well (the two flags are
+orthogonal).
+
 ## Requirements
 
 | | Version |

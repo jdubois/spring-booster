@@ -33,6 +33,13 @@ the two distributions did not even overlap (baseline max 9.928 s < boosted min
 reproduce on your own machine; absolute numbers and the size of the delta will
 vary.)
 
+> **New: a third variant** — *boosted + shared-infra leaf* — enables the
+> `backgroundSharedInfraConsumers` relaxation so the two independent migration
+> engines (Flyway + Liquibase) over the shared `DataSource` overlap on background
+> threads instead of running back to back on the main thread. The numbers above
+> predate it; `./run-benchmark.sh` now measures all three variants, and the goal
+> of the new one is to recover the regression above into a net win. See
+> [Backgrounding the shared-infra consumers](#backgrounding-the-shared-infra-consumers).
 ## Layout
 
 | File | Purpose |
@@ -40,7 +47,7 @@ vary.)
 | `setup.sh` | Installs `spring-booster` to `~/.m2`, clones BootUI at a pinned commit, applies the patch, builds the `bootui-sample-app` jar (sample module only; BootUI deps come from Maven Central). |
 | `bootui-spring-booster.patch` | The exact Spring Booster integration changes applied to the sample app. |
 | `measure.sh` | Runs a jar N times and prints each reported "Started … in X seconds" value. |
-| `run-benchmark.sh` | Runs 5× baseline + 5× boosted (plus a warm-up each) and prints the comparison table. |
+| `run-benchmark.sh` | Runs the three variants — baseline, boosted, and boosted + shared-infra leaf (plus a warm-up each) — and prints the comparison table. |
 | `boot-ui/` | The cloned + patched BootUI checkout (git-ignored; created by `setup.sh`). |
 
 ## How to run
@@ -53,15 +60,22 @@ vary.)
 No Docker is needed: the sample app's default `dev` profile uses an in-memory H2
 database and a simple in-memory cache.
 
-## How the two variants work
+## How the variants work
 
-The **same jar** is used for both variants; only a runtime flag differs, so the
+The **same jar** is used for all variants; only a runtime flag differs, so the
 comparison is apples-to-apples (identical classpath, profile, and artifact).
 
 * **Baseline** — run normally. Spring Booster is on the classpath but inactive.
 * **Boosted** — run with `--sample.parallel-bootstrap=true`. A
   `SampleParallelBootstrapInitializer` registers the library's
-  `ParallelBootstrapBeanFactoryPostProcessor`.
+  `ParallelBootstrapBeanFactoryPostProcessor` with the accept-all default.
+* **Boosted + shared-infra leaf** — run with `--sample.parallel-bootstrap=true
+  --sample.shared-infra-consumers=true`. In addition to parallel bootstrap, this
+  enables `backgroundFactoryMethodBeans(true)` and the new
+  `backgroundSharedInfraConsumers(true)` relaxation so the two independent schema
+  migration engines (Flyway + Liquibase) that share one `DataSource` can run
+  concurrently on background threads instead of being serialized onto the main
+  thread (see [Backgrounding the shared-infra consumers](#backgrounding-the-shared-infra-consumers)).
 
 Startup time is taken from Spring Boot's own
 `Started BootUiSampleApplication in X seconds` log line. Each variant runs one
@@ -119,3 +133,29 @@ As the main project README notes, the library is most useful for applications
 with many *independent, heavyweight component beans* (or apps that knowingly
 enable `backgroundFactoryMethodBeans` for their own safe `@Bean` beans), which
 this sample is not.
+
+## Backgrounding the shared-infra consumers
+
+The single biggest un-parallelised cost above is the **two schema-migration
+engines running back to back** — Flyway (the `catalog_*` tables) and Liquibase
+(the `inventory_*` tables). They are mutually independent, yet both are `@Bean`
+factory-method beans that read the **same** `DataSource`, so the safe default
+keeps them on the main thread and runs them sequentially.
+
+The `backgroundSharedInfraConsumers` relaxation (main project `SPECIFICATION.md`
+§5.2.2) targets exactly this shape: a *completed-leaf barrier* (the `DataSource`,
+a forced-mainline, acyclic, terminal singleton the framework finishes on the main
+thread before fan-out) no longer drags its independent read-only consumers back
+onto the main thread. With it — plus `backgroundFactoryMethodBeans` so the `@Bean`
+engines become eligible at all — Flyway and Liquibase land in the **same
+construction layer** and overlap on background threads.
+
+The **boosted + shared-infra leaf** variant enables both flags
+(`--sample.shared-infra-consumers=true`). The expected mechanism is that
+overlapping the two migration engines recovers the regression the plain boosted
+variant pays: instead of `t(Flyway) + t(Liquibase)` on the main thread, the
+critical path becomes roughly `max(t(Flyway), t(Liquibase))`. The variant is
+opt-in and preserves the fail-fast → sequential fallback, so a clean boot
+(no `BeanCurrentlyInCreationException`) is the correctness check; the benchmark
+table then shows whether the overlap turns the +0.8 s regression into a net win.
+Run `./run-benchmark.sh` to reproduce all three variants on your own machine.
