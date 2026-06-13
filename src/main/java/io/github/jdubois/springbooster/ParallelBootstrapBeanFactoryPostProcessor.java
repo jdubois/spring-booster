@@ -43,7 +43,9 @@ import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
 import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.beans.factory.support.AbstractBeanDefinition;
+import org.springframework.beans.factory.support.BeanDefinitionRegistry;
 import org.springframework.context.ApplicationListener;
+import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.event.ContextRefreshedEvent;
 import org.springframework.core.PriorityOrdered;
 import org.springframework.util.Assert;
@@ -163,6 +165,7 @@ public class ParallelBootstrapBeanFactoryPostProcessor
             }
             ThreadPoolExecutor executor = createBoundedExecutor();
             beanFactory.setBootstrapExecutor(executor);
+            detachFrameworkBootstrapExecutorAlias(beanFactory);
             registerShutdownHook(beanFactory, executor);
             if (logger.isInfoEnabled()) {
                 logger.info("Parallel bootstrap enabled for " + candidates.size() + " bean(s) using a pool of "
@@ -763,6 +766,33 @@ public class ParallelBootstrapBeanFactoryPostProcessor
         ThreadFactory threadFactory = new BootstrapThreadFactory(this.settings.getThreadNamePrefix());
         return new ThreadPoolExecutor(
                 poolSize, poolSize, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(), threadFactory);
+    }
+
+    /**
+     * Ensure the executor installed by {@link #createBoundedExecutor()} is the one Spring
+     * actually uses for background bean instantiation.
+     *
+     * <p>{@code AbstractApplicationContext.finishBeanFactoryInitialization} overrides any
+     * executor set through {@link ConfigurableListableBeanFactory#setBootstrapExecutor} with
+     * the bean named {@code "bootstrapExecutor"}
+     * ({@link ConfigurableApplicationContext#BOOTSTRAP_EXECUTOR_BEAN_NAME}) whenever such a
+     * bean exists. In a Spring Boot application that name is registered as an <em>alias</em>
+     * for the shared {@code applicationTaskExecutor}, so without intervention the dedicated
+     * pool configured here (its {@code poolSize} and {@code threadNamePrefix}) is silently
+     * ignored and bootstrap runs on Boot's shared task pool instead.
+     *
+     * <p>Detaching that framework alias makes {@code containsBean("bootstrapExecutor")} return
+     * {@code false}, so the executor installed here is preserved and used. A genuine,
+     * explicitly defined {@code bootstrapExecutor} bean (an actual bean definition rather than
+     * an alias) is left untouched and still wins, honoring that explicit user choice.
+     */
+    private void detachFrameworkBootstrapExecutorAlias(ConfigurableListableBeanFactory beanFactory) {
+        String name = ConfigurableApplicationContext.BOOTSTRAP_EXECUTOR_BEAN_NAME;
+        if (beanFactory instanceof BeanDefinitionRegistry registry && registry.isAlias(name)) {
+            registry.removeAlias(name);
+            logger.debug("Detached the framework '" + name
+                    + "' alias so the Spring Booster bootstrap executor is used for background instantiation");
+        }
     }
 
     private void registerShutdownHook(ConfigurableListableBeanFactory beanFactory, ThreadPoolExecutor executor) {
