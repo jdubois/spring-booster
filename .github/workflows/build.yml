@@ -23,8 +23,8 @@ jobs:
       fail-fast: false
       matrix:
         # The Palantir Java Format engine used by Spotless runs under the build
-        # JDK, so the build is pinned to the project's Java 17 baseline.
-        java: [ '17' ]
+        # JDK, so the build is pinned to the project's Java 25 baseline.
+        java: [ '25' ]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
