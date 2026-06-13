@@ -30,10 +30,12 @@ degrades gracefully to the normal sequential bootstrap.
 | `EnableParallelBootstrap` | Public opt-in annotation; `@Import`s the registrar. |
 | `ParallelBootstrapRegistrar` | Registers the post-processor from annotation attributes. |
 | `ParallelBootstrapApplicationContextInitializer` | Programmatic / `spring.factories` entry point. |
-| `ParallelBootstrapSettings` | Immutable config (pool size, prefix, kill-switch, `candidateFilter`, `backgroundFactoryMethodBeans`); fluent `Builder`. |
+| `ParallelBootstrapSettings` | Immutable config (pool size, prefix, kill-switch, `candidateFilter`, `backgroundFactoryMethodBeans`, `evidenceBasedColocation`); fluent `Builder`. |
 | `BeanDependencyGraph` | Dependency graph over the bean definitions: declared **and** by-type autowiring edges, classified forced vs sync. Kahn layering + Tarjan cycle detection. Never instantiates beans. |
 | `AutowiredEdgeResolver` | Reflectively resolves by-type / `@Autowired` / `ObjectProvider` edges (no bean instantiation). |
-| `ParallelBootstrapBeanFactoryPostProcessor` | The engine: connectivity-safe candidate planning, marks them, installs/tears down the executor. |
+| `ConfigurationClassColocationAnalyzer` | Evidence-based co-location (opt-in): ASM bytecode analysis proving every `@Configuration` class is free of invisible by-type lookup channels, so `@Bean` beans can re-enter the background set. Context-wide all-or-nothing. |
+| `ParallelBootstrapBeanFactoryPostProcessor` | The engine: connectivity-safe candidate planning, marks them, installs/tears down the executor. Also a `BeanFactoryInitializationAotProcessor` that precomputes the plan at AOT build time. |
+| `ParallelBootstrapAotContribution` | AOT codegen: emits the precomputed background-init plan and pool size as generated initializer code for native-image / AOT runtime. |
 | `package-info.java` | `@NullMarked` package declaration + overview. |
 
 ## Build, test, and publish
@@ -50,9 +52,10 @@ JDK, so set `JAVA_HOME` to a JDK 17 before building.
 ./mvnw install         # install jar/sources/javadoc/POM into ~/.m2
 ```
 
-Expectation when your change is complete: `./mvnw verify` is GREEN — all 34 tests
+Expectation when your change is complete: `./mvnw verify` is GREEN — all 81 tests
 pass (`BeanDependencyGraphTests`, `ParallelBootstrapBeanFactoryPostProcessorTests`,
-`ParallelBootstrapIntegrationTests`) **and** `spotless:check` passes. If the
+`ParallelBootstrapIntegrationTests`, `ConfigurationClassColocationAnalyzerTests`,
+`ParallelBootstrapAotContributionTests`) **and** `spotless:check` passes. If the
 formatting check fails, run `./mvnw spotless:apply` and re-run.
 
 ## Dependency / version policy

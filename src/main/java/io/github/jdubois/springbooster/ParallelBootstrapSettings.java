@@ -58,6 +58,8 @@ public final class ParallelBootstrapSettings {
 
     private final boolean adaptivePoolSize;
 
+    private final boolean evidenceBasedColocation;
+
     private ParallelBootstrapSettings(
             boolean enabled,
             int poolSize,
@@ -66,7 +68,8 @@ public final class ParallelBootstrapSettings {
             boolean backgroundFactoryMethodBeans,
             boolean profileStartup,
             int minimumBackgroundCandidates,
-            boolean adaptivePoolSize) {
+            boolean adaptivePoolSize,
+            boolean evidenceBasedColocation) {
 
         this.enabled = enabled;
         this.poolSize = poolSize;
@@ -76,6 +79,7 @@ public final class ParallelBootstrapSettings {
         this.profileStartup = profileStartup;
         this.minimumBackgroundCandidates = minimumBackgroundCandidates;
         this.adaptivePoolSize = adaptivePoolSize;
+        this.evidenceBasedColocation = evidenceBasedColocation;
     }
 
     /**
@@ -187,6 +191,30 @@ public final class ParallelBootstrapSettings {
     }
 
     /**
+     * Whether {@code @Bean} factory-method beans are released from blanket co-location when
+     * static bytecode analysis proves every configuration class to be free of invisible
+     * by-type lookup channels.
+     * <p>Defaults to {@code false}, preserving the safe blanket rule that keeps every
+     * {@code @Bean} bean on its (always main-thread) configuration class's thread. When
+     * {@code true} (and {@link #isBackgroundFactoryMethodBeans()} is {@code false}), a
+     * {@link ConfigurationClassColocationAnalyzer} inspects every configuration class with
+     * Spring's bundled ASM: only if <em>all</em> of them provably never capture the
+     * {@code ApplicationContext}/{@code BeanFactory}, implement a framework-callback
+     * interface, or self-invoke another {@code @Bean} method is co-location skipped, letting
+     * {@code @Bean} beans (including heavyweight framework beans) re-enter the background
+     * candidate set subject to the ordinary structural and connectivity checks. Because an
+     * unsafe configuration can pull any configuration's {@code @Bean} bean by type, the
+     * relaxation is context-wide and all-or-nothing; any class that cannot be analysed is
+     * treated as unsafe, so co-location is preserved.
+     * <p>This is a strictly safer alternative to {@link #isBackgroundFactoryMethodBeans()
+     * backgroundFactoryMethodBeans}, which removes co-location unconditionally.
+     * @return whether evidence-based co-location is enabled
+     */
+    public boolean isEvidenceBasedColocation() {
+        return this.evidenceBasedColocation;
+    }
+
+    /**
      * Create settings with sensible defaults: enabled, a pool size of twice the
      * number of available processors, the {@code parallel-bootstrap-} thread prefix,
      * and a candidate filter that accepts every bean.
@@ -247,6 +275,8 @@ public final class ParallelBootstrapSettings {
         private int minimumBackgroundCandidates = 1;
 
         private boolean adaptivePoolSize = false;
+
+        private boolean evidenceBasedColocation = false;
 
         private Builder() {}
 
@@ -360,6 +390,23 @@ public final class ParallelBootstrapSettings {
         }
 
         /**
+         * Set whether {@code @Bean} factory-method beans are released from blanket
+         * co-location when static bytecode analysis proves every configuration class to be
+         * free of invisible by-type lookup channels. Defaults to {@code false}. When
+         * {@code true} (and {@link #backgroundFactoryMethodBeans(boolean)} is {@code false}),
+         * co-location is skipped only if a {@link ConfigurationClassColocationAnalyzer} finds
+         * <em>all</em> configuration classes provably safe; any unanalysable or unsafe class
+         * keeps the safe blanket rule.
+         * @param evidenceBasedColocation whether evidence-based co-location is enabled
+         * @return this builder
+         * @see ParallelBootstrapSettings#isEvidenceBasedColocation()
+         */
+        public Builder evidenceBasedColocation(boolean evidenceBasedColocation) {
+            this.evidenceBasedColocation = evidenceBasedColocation;
+            return this;
+        }
+
+        /**
          * Build the immutable {@link ParallelBootstrapSettings} instance.
          * @return the immutable settings instance
          */
@@ -372,7 +419,8 @@ public final class ParallelBootstrapSettings {
                     this.backgroundFactoryMethodBeans,
                     this.profileStartup,
                     this.minimumBackgroundCandidates,
-                    this.adaptivePoolSize);
+                    this.adaptivePoolSize,
+                    this.evidenceBasedColocation);
         }
     }
 }

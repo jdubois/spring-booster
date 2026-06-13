@@ -89,6 +89,10 @@ class ParallelBootstrapRegistrar implements ImportBeanDefinitionRegistrar {
             if (adaptivePoolSize instanceof Boolean adaptiveValue) {
                 builder.adaptivePoolSize(adaptiveValue);
             }
+            Object evidenceBasedColocation = attributes.get("evidenceBasedColocation");
+            if (evidenceBasedColocation instanceof Boolean evidenceValue) {
+                builder.evidenceBasedColocation(evidenceValue);
+            }
         }
         return builder.build();
     }

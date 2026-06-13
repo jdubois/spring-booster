@@ -35,9 +35,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.jspecify.annotations.Nullable;
+import org.springframework.aot.AotDetector;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.BeanFactoryInitializer;
 import org.springframework.beans.factory.SmartInitializingSingleton;
+import org.springframework.beans.factory.aot.BeanFactoryInitializationAotContribution;
+import org.springframework.beans.factory.aot.BeanFactoryInitializationAotProcessor;
 import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
 import org.springframework.beans.factory.config.BeanPostProcessor;
@@ -79,6 +82,15 @@ import org.springframework.util.Assert;
  * subtype, or if planning fails for any reason, the post-processor logs the
  * condition and silently falls back to the standard sequential bootstrap.
  *
+ * <p><strong>Ahead-of-time (AOT) / native image.</strong> This post-processor is also a
+ * {@link BeanFactoryInitializationAotProcessor}: during Spring AOT processing it computes
+ * the background-init plan once at build time and emits it as generated code (see
+ * {@link ParallelBootstrapAotContribution}). When the application later runs with the
+ * generated artifacts ({@link AotDetector#useGeneratedArtifacts()}), the runtime planning
+ * is skipped entirely &mdash; the generated initializer marks the precomputed candidates and
+ * installs the bootstrap executor through {@link #applyAotPlan} &mdash; so the reflective
+ * graph analysis never runs in a native image and runtime planning cost approaches zero.
+ *
  * @author Spring Framework Team
  * @since 7.1
  * @see ParallelBootstrapSettings
@@ -86,11 +98,22 @@ import org.springframework.util.Assert;
  * @see ParallelBootstrapApplicationContextInitializer
  */
 public class ParallelBootstrapBeanFactoryPostProcessor
-        implements BeanFactoryPostProcessor, BeanFactoryInitializer<ConfigurableListableBeanFactory>, PriorityOrdered {
+        implements BeanFactoryPostProcessor,
+                BeanFactoryInitializer<ConfigurableListableBeanFactory>,
+                BeanFactoryInitializationAotProcessor,
+                PriorityOrdered {
 
     private static final Log logger = LogFactory.getLog(ParallelBootstrapBeanFactoryPostProcessor.class);
 
     private final ParallelBootstrapSettings settings;
+
+    /**
+     * The bootstrap executor this post-processor installed, if any. Tracked so that AOT
+     * processing (which runs the post-processor's {@code apply} during a build-time refresh
+     * before the AOT contribution is collected) can tell its own executor apart from one a
+     * user supplied, and not mistake it for a reason to skip emitting the plan.
+     */
+    private @Nullable Executor installedExecutor;
 
     /**
      * Create a post-processor with default settings.
@@ -135,6 +158,13 @@ public class ParallelBootstrapBeanFactoryPostProcessor
             logger.debug("Parallel bootstrap disabled; using sequential singleton instantiation");
             return;
         }
+        if (AotDetector.useGeneratedArtifacts()) {
+            // Running with AOT-generated artifacts: the precomputed plan is applied by the
+            // generated context initializer (see ParallelBootstrapAotContribution), so the
+            // reflective runtime planning is skipped entirely.
+            logger.debug("AOT-generated artifacts in use; parallel bootstrap plan applied ahead of time");
+            return;
+        }
         if (beanFactory.getBootstrapExecutor() != null) {
             logger.info("A bootstrap executor is already configured; skipping parallel bootstrap planning");
             return;
@@ -154,8 +184,9 @@ public class ParallelBootstrapBeanFactoryPostProcessor
                 markForBackgroundInit(beanFactory, beanName);
             }
             int poolSize = effectivePoolSize(graph, candidates);
-            ThreadPoolExecutor executor = createBoundedExecutor(poolSize);
+            ThreadPoolExecutor executor = createBoundedExecutor(poolSize, this.settings.getThreadNamePrefix());
             beanFactory.setBootstrapExecutor(executor);
+            this.installedExecutor = executor;
             registerShutdownHook(beanFactory, executor);
             if (logger.isInfoEnabled()) {
                 logger.info("Parallel bootstrap enabled for " + candidates.size() + " bean(s) using a pool of "
@@ -164,6 +195,74 @@ public class ParallelBootstrapBeanFactoryPostProcessor
         } catch (RuntimeException ex) {
             // Kill-switch / graceful fallback: never let planning break the context.
             logger.warn("Parallel bootstrap planning failed; falling back to sequential instantiation", ex);
+        }
+    }
+
+    /**
+     * Spring AOT entry point. Computes the background-init plan once at build time and, if
+     * any candidates qualify, returns a {@link ParallelBootstrapAotContribution} that emits
+     * the plan as generated code applied at runtime through {@link #applyAotPlan}. Returns
+     * {@code null} (no contribution) when the feature is disabled, a foreign bootstrap
+     * executor is configured, or fewer candidates than
+     * {@link ParallelBootstrapSettings#getMinimumBackgroundCandidates()} qualify &mdash; in
+     * which case the AOT-optimized application bootstraps sequentially, exactly as the
+     * dynamic path would.
+     */
+    @Override
+    public @Nullable BeanFactoryInitializationAotContribution processAheadOfTime(
+            ConfigurableListableBeanFactory beanFactory) {
+        if (!this.settings.isEnabled()) {
+            return null;
+        }
+        Executor existing = beanFactory.getBootstrapExecutor();
+        if (existing != null && existing != this.installedExecutor) {
+            // A user-supplied bootstrap executor takes precedence; do not emit a plan.
+            return null;
+        }
+        try {
+            BeanDependencyGraph graph = buildGraph(beanFactory);
+            List<String> candidates = planCandidates(beanFactory, graph);
+            if (candidates.size() < this.settings.getMinimumBackgroundCandidates()) {
+                return null;
+            }
+            int poolSize = effectivePoolSize(graph, candidates);
+            return new ParallelBootstrapAotContribution(candidates, poolSize, this.settings.getThreadNamePrefix());
+        } catch (RuntimeException ex) {
+            logger.warn("Parallel bootstrap AOT planning failed; the application will bootstrap sequentially", ex);
+            return null;
+        }
+    }
+
+    /**
+     * Apply an ahead-of-time computed parallel bootstrap plan: mark each named bean for
+     * background initialization and install a bounded bootstrap executor of the given size.
+     * Invoked by the code generated during AOT processing (see
+     * {@link ParallelBootstrapAotContribution}); it is a no-op if a bootstrap executor is
+     * already configured, so a user-supplied executor is never overridden.
+     * @param beanFactory the bean factory to configure (must not be {@code null})
+     * @param backgroundBeanNames the names of the beans to initialize in the background
+     * @param poolSize the size of the bounded bootstrap pool to install
+     * @param threadNamePrefix the thread name prefix for bootstrap threads
+     */
+    public static void applyAotPlan(
+            ConfigurableListableBeanFactory beanFactory,
+            List<String> backgroundBeanNames,
+            int poolSize,
+            String threadNamePrefix) {
+        Assert.notNull(beanFactory, "'beanFactory' must not be null");
+        if (beanFactory.getBootstrapExecutor() != null) {
+            logger.info("A bootstrap executor is already configured; skipping precomputed parallel bootstrap plan");
+            return;
+        }
+        for (String beanName : backgroundBeanNames) {
+            markForBackgroundInit(beanFactory, beanName);
+        }
+        ThreadPoolExecutor executor = createBoundedExecutor(poolSize, threadNamePrefix);
+        beanFactory.setBootstrapExecutor(executor);
+        registerShutdownHook(beanFactory, executor);
+        if (logger.isInfoEnabled()) {
+            logger.info("Parallel bootstrap (ahead-of-time) enabled for " + backgroundBeanNames.size()
+                    + " bean(s) using a pool of " + poolSize + " thread(s)");
         }
     }
 
@@ -192,7 +291,29 @@ public class ParallelBootstrapBeanFactoryPostProcessor
      */
     private BeanDependencyGraph buildGraph(ConfigurableListableBeanFactory beanFactory) {
         List<String> allNames = List.of(beanFactory.getBeanDefinitionNames());
-        return BeanDependencyGraph.build(beanFactory, allNames, !this.settings.isBackgroundFactoryMethodBeans());
+        return BeanDependencyGraph.build(beanFactory, allNames, shouldColocateFactoryMethodBeans(beanFactory));
+    }
+
+    /**
+     * Decide whether {@code @Bean} factory-method beans must be co-located with their
+     * configuration class. They are, by default, unless the user has opted into
+     * backgrounding them unconditionally
+     * ({@link ParallelBootstrapSettings#isBackgroundFactoryMethodBeans()}), or opted into
+     * {@link ParallelBootstrapSettings#isEvidenceBasedColocation() evidence-based
+     * co-location} and static analysis proves every configuration class free of invisible
+     * by-type lookup channels.
+     */
+    private boolean shouldColocateFactoryMethodBeans(ConfigurableListableBeanFactory beanFactory) {
+        if (this.settings.isBackgroundFactoryMethodBeans()) {
+            return false;
+        }
+        if (this.settings.isEvidenceBasedColocation()
+                && ConfigurationClassColocationAnalyzer.canSkipColocation(beanFactory)) {
+            logger.debug("Evidence-based analysis proved all configuration classes safe; "
+                    + "releasing @Bean beans from co-location");
+            return false;
+        }
+        return true;
     }
 
     /**
@@ -345,7 +466,7 @@ public class ParallelBootstrapBeanFactoryPostProcessor
                 || SmartInitializingSingleton.class.isAssignableFrom(type));
     }
 
-    private void markForBackgroundInit(ConfigurableListableBeanFactory beanFactory, String beanName) {
+    private static void markForBackgroundInit(ConfigurableListableBeanFactory beanFactory, String beanName) {
         BeanDefinition original = safeGetBeanDefinition(beanFactory, beanName);
         if (original instanceof AbstractBeanDefinition abd) {
             abd.setBackgroundInit(true);
@@ -358,8 +479,8 @@ public class ParallelBootstrapBeanFactoryPostProcessor
         }
     }
 
-    private ThreadPoolExecutor createBoundedExecutor(int poolSize) {
-        ThreadFactory threadFactory = new BootstrapThreadFactory(this.settings.getThreadNamePrefix());
+    private static ThreadPoolExecutor createBoundedExecutor(int poolSize, String threadNamePrefix) {
+        ThreadFactory threadFactory = new BootstrapThreadFactory(threadNamePrefix);
         return new ThreadPoolExecutor(
                 poolSize, poolSize, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(), threadFactory);
     }
@@ -394,11 +515,11 @@ public class ParallelBootstrapBeanFactoryPostProcessor
         }
     }
 
-    private void registerShutdownHook(ConfigurableListableBeanFactory beanFactory, ThreadPoolExecutor executor) {
+    private static void registerShutdownHook(ConfigurableListableBeanFactory beanFactory, ThreadPoolExecutor executor) {
         // Shut the pool down right after the context has refreshed so it does not
         // linger for the lifetime of the context. The listener is registered as a
         // manual singleton so that it is detected by the context's event multicaster.
-        String listenerName = getClass().getName() + ".shutdownListener";
+        String listenerName = ParallelBootstrapBeanFactoryPostProcessor.class.getName() + ".shutdownListener";
         ApplicationListener<ContextRefreshedEvent> listener = event -> {
             beanFactory.setBootstrapExecutor(null);
             executor.shutdown();

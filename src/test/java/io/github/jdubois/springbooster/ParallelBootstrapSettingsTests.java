@@ -59,4 +59,19 @@ class ParallelBootstrapSettingsTests {
 
         assertThat(settings.isAdaptivePoolSize()).isTrue();
     }
+
+    @Test
+    void evidenceBasedColocationDefaultsToOff() {
+        assertThat(ParallelBootstrapSettings.withDefaults().isEvidenceBasedColocation())
+                .isFalse();
+    }
+
+    @Test
+    void evidenceBasedColocationIsConfigurable() {
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                .evidenceBasedColocation(true)
+                .build();
+
+        assertThat(settings.isEvidenceBasedColocation()).isTrue();
+    }
 }

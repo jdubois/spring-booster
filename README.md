@@ -47,7 +47,9 @@ if anything goes wrong.
   with their `@Configuration` class — configuration classes are the main source of
   dynamic, by-type lookups (`getBean`, `ObjectProvider`, `Lazy`) that static analysis
   cannot see — which is what makes accept-all bootstrapping safe. Opt in with
-  `backgroundFactoryMethodBeans(true)` to parallelize those too.
+  `backgroundFactoryMethodBeans(true)` to parallelize those too, or
+  `evidenceBasedColocation(true)` to background them automatically when ASM bytecode
+  analysis proves every configuration class free of invisible by-type lookups.
 * Marks those beans for background initialization and installs a **bounded
   bootstrap thread pool** (sized by default at twice the available processor
   count) that the bean factory uses during `preInstantiateSingletons()`.
@@ -126,6 +128,30 @@ This reintroduces the risk that a main-thread bean pulls a backgrounded `@Bean` 
 by type through a call the analysis cannot see, so pair it with a `candidateFilter`
 scoped to beans you know are safe.
 
+### Evidence-based co-location
+
+`backgroundFactoryMethodBeans(true)` backgrounds *every* `@Bean` bean unconditionally,
+which is unsafe if any configuration class performs an invisible by-type lookup.
+Evidence-based co-location is the safe middle ground: it uses ASM bytecode analysis to
+*prove* that every `@Configuration` class in the context is free of invisible lookup
+channels before releasing `@Bean` beans into the background set.
+
+```java
+@EnableParallelBootstrap(evidenceBasedColocation = true)
+// or
+ParallelBootstrapSettings.builder().evidenceBasedColocation(true).build();
+```
+
+A configuration class is considered safe only when it never captures the
+`ApplicationContext`/`BeanFactory`, holds an `ObjectProvider`/`ObjectFactory`,
+implements a framework callback interface, extends a non-trivial superclass, or
+self-invokes one of its own `@Bean` methods. Because an unsafe class could pull *any*
+config's `@Bean` bean by type, the decision is context-wide and all-or-nothing: if even
+one configuration class cannot be proven safe, all `@Bean` beans stay co-located.
+This lets heavyweight framework `@Bean` beans parallelize automatically on applications
+where the analysis can vouch for every configuration class, with no manual
+`candidateFilter` required.
+
 ### Profiling startup
 
 Spring Booster ships an opt-in **startup profiler** that records, for every singleton
@@ -179,6 +205,16 @@ ParallelBootstrapSettings.builder()
   concurrency width* of the selected candidates (the most beans that can actually run at
   once given their dependencies), with a floor of `2` and never exceeding `poolSize`.
   This avoids idle threads when the candidates cannot all run concurrently.
+
+### Ahead-of-time (AOT) and GraalVM native image
+
+Spring Booster participates in Spring's AOT processing. When your application is built
+with AOT (for example a GraalVM native image, or `spring.aot.enabled=true`), the
+background-init plan and pool size are computed **once at build time** and emitted as
+generated initializer code. At runtime the generated code marks the selected beans and
+installs the bootstrap executor directly, so the dependency-graph construction and
+bytecode analysis never run on the startup path. No configuration is required — the
+behaviour is identical to the runtime planner, just precomputed.
 
 ## Requirements
 

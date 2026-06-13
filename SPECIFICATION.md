@@ -311,12 +311,6 @@ cost of reintroducing the invisible by-type pull risk, so it should be paired wi
 
 ### 5.4 Possible future work
 
-* **Evidence-based co-location** — replace the blanket "co-locate every `@Bean` bean"
-  rule (§5.2.1) with static bytecode analysis of each `@Configuration` class: a config
-  that provably never captures the `ApplicationContext`/`BeanFactory`, implements a
-  framework callback, or self-invokes another `@Bean` has no invisible-lookup channel, so
-  its `@Bean` beans could safely re-enter the background set by default. This is the
-  structural fix that would let the *heavyweight* framework beans parallelize.
 * **Off-critical-path warm-up** — even when a heavyweight bean must stay on the main
   thread for safety, the I/O it triggers (connection-pool fill, migrations, metamodel
   build) and one-time class loading / static initialization could be pre-warmed
@@ -325,9 +319,6 @@ cost of reintroducing the invisible by-type pull risk, so it should be paired wi
 * **Persisted, profile-guided scheduling** — feed `BeanStartupProfiler` output back as a
   cost model on the next run to schedule the longest-pole beans first and refine the
   engagement/pool-sizing heuristics (§6.2) from measured rather than structural data.
-* **Build-time / AOT planning** — compute the background-init decision set during Spring
-  AOT processing and emit it as metadata, so runtime planning cost approaches zero and the
-  library becomes GraalVM native-image friendly.
 * **Opt-in `getBean`-from-bean-code scanning** to also cover the residual component
   blind spot (above), letting `backgroundFactoryMethodBeans(true)` be safe on more
   applications.
@@ -337,9 +328,28 @@ cost of reintroducing the invisible by-type pull risk, so it should be paired wi
   harness; extending it to apps with many independent heavyweight beans would better
   quantify the win.
 
-The first round of this work has landed: the **engagement and pool-sizing tuning** of
-§6.2 (`minimumBackgroundCandidates` and `adaptivePoolSize`) makes the parallelism that is
-already safe pay off without ever making startup worse.
+The first rounds of this work have landed:
+
+* The **engagement and pool-sizing tuning** of §6.2 (`minimumBackgroundCandidates` and
+  `adaptivePoolSize`) makes the parallelism that is already safe pay off without ever
+  making startup worse.
+* **Evidence-based co-location** (opt-in via `evidenceBasedColocation`) replaces the
+  blanket "co-locate every `@Bean` bean" rule (§5.2.1) with static bytecode analysis of
+  each `@Configuration` class. A config that provably never captures the
+  `ApplicationContext`/`BeanFactory`, holds an `ObjectProvider`/`ObjectFactory`,
+  implements a framework callback, or self-invokes another `@Bean` has no invisible
+  by-type lookup channel. Only when **every** configuration class in the context is
+  proven safe are `@Bean` beans released from co-location, letting the *heavyweight*
+  framework beans parallelize. Any class that cannot be analysed conservatively keeps
+  the whole context co-located. Implemented by `ConfigurationClassColocationAnalyzer`
+  using the `org.springframework.asm` reader bundled with Spring.
+* **Build-time / AOT planning** — the post-processor is a
+  `BeanFactoryInitializationAotProcessor`. During Spring AOT processing it computes the
+  background-init decision set and pool size once and emits them as generated code
+  (`ParallelBootstrapAotContribution`). At native-image / AOT runtime the generated
+  initializer marks the beans and installs the bootstrap executor directly, so runtime
+  planning cost (graph construction and bytecode analysis) approaches zero and the
+  library is GraalVM native-image friendly.
 
 ---
 

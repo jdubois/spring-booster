@@ -128,4 +128,19 @@ public @interface EnableParallelBootstrap {
      * @see ParallelBootstrapSettings#isAdaptivePoolSize()
      */
     boolean adaptivePoolSize() default false;
+
+    /**
+     * Whether {@code @Bean} factory-method beans are released from blanket co-location when
+     * static bytecode analysis (Spring's bundled ASM) proves every configuration class to be
+     * free of invisible by-type lookup channels. Defaults to {@code false}. When {@code true}
+     * (and {@link #backgroundFactoryMethodBeans()} is {@code false}), co-location is skipped
+     * only if <em>all</em> configuration classes provably never capture the
+     * {@code ApplicationContext}/{@code BeanFactory}, implement a framework-callback
+     * interface, or self-invoke another {@code @Bean} method; any unanalysable or unsafe class
+     * keeps the safe blanket rule. This is a strictly safer alternative to
+     * {@link #backgroundFactoryMethodBeans()}.
+     * @return whether evidence-based co-location is enabled
+     * @see ParallelBootstrapSettings#isEvidenceBasedColocation()
+     */
+    boolean evidenceBasedColocation() default false;
 }
