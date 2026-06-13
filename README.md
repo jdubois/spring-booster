@@ -60,6 +60,9 @@ if anything goes wrong.
 * Marks those beans for background initialization and installs a **bounded
   bootstrap thread pool** (sized by default at twice the available processor
   count) that the bean factory uses during `preInstantiateSingletons()`.
+* Can **precompute the conservative bootstrap plan at build time** during Spring AOT
+  processing, package it as a generated resource, and reuse it at runtime instead of
+  recomputing the bean graph on startup.
 * **Shuts the pool down** automatically once the context has refreshed, so it does
   not linger for the lifetime of the application.
 * Falls back to the **normal sequential bootstrap** whenever the feature is
@@ -81,6 +84,15 @@ Tuning attributes are available:
 
 ```java
 @EnableParallelBootstrap(poolSize = 8, threadNamePrefix = "boot-", enabled = true)
+```
+
+Build-time planning and fallback behavior can also be tuned:
+
+```java
+@EnableParallelBootstrap(
+        buildTimePlanningEnabled = true,
+        runtimePlanningEnabled = true,
+        generatedPlanRequired = false)
 ```
 
 ### Programmatic (e.g. Spring Boot, or any code that builds the context)
@@ -105,6 +117,9 @@ io.github.jdubois.springbooster.ParallelBootstrapApplicationContextInitializer
 ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
         .poolSize(8)
         .threadNamePrefix("boot-")
+        .buildTimePlanningEnabled(true)
+        .runtimePlanningEnabled(true)
+        .generatedPlanRequired(false)
         .candidateFilter(beanName -> beanName.startsWith("com.example."))
         .build();
 
@@ -277,6 +292,61 @@ ordered, cycle detection and layering are unaffected, and every member must stil
 `isSafeCandidate` and the mainline-propagation pass. An incorrect independence assertion
 fails fast with `BeanCurrentlyInCreationException` and falls back to the sequential
 bootstrap.
+
+### Build-time planning (Spring AOT)
+
+When Spring AOT processing runs, Spring Booster can precompute its conservative
+parallel-bootstrap plan at build time and package it into the application as a
+generated resource. The generated AOT initialization code also pre-marks the
+selected bean definitions for background initialization, so they are ready to
+run as soon as the runtime bootstrap executor is installed. If those generated
+markers are unavailable, Spring Booster loads the generated plan next and uses
+it directly when the current bean factory still matches the build-time
+fingerprint. If the generated plan is missing or stale, Spring Booster falls
+back to the existing runtime planner by default.
+
+Use the new settings to control this behavior:
+
+* `buildTimePlanningEnabled` — emit the generated plan during AOT processing
+* `runtimePlanningEnabled` — allow runtime graph recomputation when no valid plan is
+  available
+* `generatedPlanRequired` — disable fallback and stay sequential unless a valid
+  generated plan is present
+
+> **Limit:** the AOT plan reuses the same conservative safety rules as runtime
+> planning. It does **not** make dynamic bean lookups magically visible, so the
+> default safety behavior for `@Bean` factory-method beans remains unchanged.
+
+### Bytecode lookup-detection (experimental)
+
+The reflective dynamic-configuration check is intentionally coarse: it flags a
+configuration as *dynamic* from structural signals alone (a CGLIB-proxied full
+`@Configuration`, an `Aware`/`*Configurer`/`*Customizer` callback, or a merely
+*declared* `ApplicationContext`/`BeanFactory`/`ObjectProvider`/`@Lazy` field or
+parameter). Many such configurations never actually look a bean up, yet their
+`@Bean` beans — and, because co-location is context-wide, *every* configuration's
+`@Bean` beans — are conservatively kept on the main thread.
+
+The opt-in `bytecodeLookupDetection` setting adds a build-time bytecode scan
+(using Spring's repackaged ASM) that inspects what a configuration class *really*
+does. A configuration the reflective pass flagged as dynamic is re-examined for an
+actual `getBean*`/`getBeanProvider` call on a captured `BeanFactory`/
+`ApplicationContext`, an `ObjectProvider`/`ObjectFactory`/`Provider` dereference,
+or a CGLIB `@Bean` self-invocation. If the scan *proves* the configuration performs
+no such lookup it is downgraded to *pure*; an inconclusive scan (for example a class
+file that cannot be read) leaves the conservative *dynamic* classification in place.
+The refinement therefore only ever relaxes a false positive and is always safe.
+
+```java
+@EnableParallelBootstrap(bytecodeLookupDetection = true)
+// or
+ParallelBootstrapSettings.builder().bytecodeLookupDetection(true).build();
+```
+
+> **Status:** this is a prototype intended for build-time (Spring AOT) planning,
+> off the startup critical path. It changes which configurations are classified as
+> dynamic, but never relaxes the context-wide co-location rule when a genuine
+> dynamic lookup remains.
 
 ## Requirements
 

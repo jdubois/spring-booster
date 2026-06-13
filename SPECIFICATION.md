@@ -104,9 +104,14 @@ All code lives in a single package: `io.github.jdubois.springbooster`.
 | `EnableParallelBootstrap` | Public opt-in annotation. `@Import`s the registrar. Carries tuning attributes (`enabled`, `poolSize`, `threadNamePrefix`, `backgroundBeanNames`, `backgroundFactoryMethodBeans`, `deferProviderEdges`, `backgroundSharedInfraConsumers`, `barrierBeanNames`, `coBackgroundGroups`). |
 | `ParallelBootstrapRegistrar` | `ImportBeanDefinitionRegistrar` activated by the annotation. Translates annotation attributes into `ParallelBootstrapSettings` and registers the post-processor as an infrastructure bean (idempotently). |
 | `ParallelBootstrapApplicationContextInitializer` | `ApplicationContextInitializer` entry point for programmatic / Spring Boot (`spring.factories`) registration, with no need for the annotation. |
-| `ParallelBootstrapSettings` | Immutable configuration (pool size, thread-name prefix, kill-switch, candidate `Predicate`, `backgroundBeanNames` allowlist, `backgroundFactoryMethodBeans`, `deferProviderEdges` and `backgroundSharedInfraConsumers` toggles, `barrierBeanNames` named completed-leaf barriers, `coBackgroundGroups` independence hints). Built via a fluent `Builder`. Defines the per-bean opt-out and force-background attributes. |
+| `ParallelBootstrapSettings` | Immutable configuration (pool size, thread-name prefix, kill-switch, candidate `Predicate`, `backgroundBeanNames` allowlist, `backgroundFactoryMethodBeans`, `deferProviderEdges` and `backgroundSharedInfraConsumers` toggles, `barrierBeanNames` named completed-leaf barriers, `coBackgroundGroups` independence hints, `bytecodeLookupDetection` refinement, and build-time planning/fallback flags). Built via a fluent `Builder`. Defines the per-bean opt-out and force-background attributes. |
+| `ParallelBootstrapPlanner` | Shared planner used both at runtime and during AOT generation. Delegates candidate selection to the post-processor so build-time and runtime select identical candidates (preserving every relaxation), and produces a conservative bootstrap plan plus compatibility fingerprints. |
+| `ParallelBootstrapPlan` | Serialized build-time plan containing the eligible background beans, forced-mainline beans, sync/co-location constraints, and compatibility fingerprints. |
+| `ParallelBootstrapAotProcessor` | Spring AOT processor that computes the conservative plan at build time and emits it as a generated classpath resource. |
+| `ParallelBootstrapInfrastructure` | Shared helper for idempotent post-processor registration and settings lookup, used by the registrar, initializer, and AOT processor. |
 | `BeanDependencyGraph` | Pure in-memory dependency graph of the bean definitions. Models both declared references **and** by-type autowiring edges (via `AutowiredEdgeResolver`), classifying each edge as *forced* or *sync* (and optionally *deferred*). Provides topological layering (Kahn) and cycle detection (Tarjan). Never triggers bean creation. |
-| `DynamicConfigurationDetector` | Statically classifies each `@Configuration`/factory bean as *dynamic* (capable of invisible by-type lookups — full `@Configuration`, `Aware`/`*Configurer`/`*Customizer`, or captured context / provider / `@Lazy` members) or *pure*. If any configuration in the context is dynamic, co-location edges (§5.2.1) are added for **every** factory-method bean; if none is, they are dropped entirely. |
+| `DynamicConfigurationDetector` | Statically classifies each `@Configuration`/factory bean as *dynamic* (capable of invisible by-type lookups — full `@Configuration`, `Aware`/`*Configurer`/`*Customizer`, or captured context / provider / `@Lazy` members) or *pure*. If any configuration in the context is dynamic, co-location edges (§5.2.1) are added for **every** factory-method bean; if none is, they are dropped entirely. When `bytecodeLookupDetection` is enabled it consults `BytecodeLookupDetector` to downgrade reflective false positives to *pure*. |
+| `BytecodeLookupDetector` | Experimental build-time bytecode scanner (Spring's repackaged ASM) that reports whether a configuration *actually* performs a dynamic bean lookup (`getBean*`/`getBeanProvider`, `ObjectProvider`/`ObjectFactory`/`Provider` dereference, or CGLIB `@Bean` self-invocation). Three-valued (`PURE`/`DYNAMIC`/`INCONCLUSIVE`); only ever relaxes a conservatively-dynamic classification on positive proof of purity. |
 | `AutowiredEdgeResolver` | Reflectively resolves the by-type / `@Autowired` / `ObjectProvider` dependency edges that the declarations do not reveal (`@Bean` method params, autowired constructors, `@Autowired` fields/methods), unwrapping `ObjectProvider`/`ObjectFactory`/`Provider`/`Optional`/collections/maps/arrays. Resolves candidate names with eager init disabled, so it never instantiates a bean. |
 | `ParallelBootstrapBeanFactoryPostProcessor` | The engine. Plans candidates (connectivity-safe selection), marks them for background init, installs the bounded executor, and registers a listener to shut it down after refresh. |
 | `package-info.java` | `@NullMarked` package declaration and overview. |
@@ -122,9 +127,16 @@ ParallelBootstrapRegistrar.registerBeanDefinitions(...)
         ▼
 ParallelBootstrapBeanFactoryPostProcessor.postProcessBeanFactory(beanFactory)
         │
+        ├─ reuse pre-marked candidates (AOT) ─ if any bean definition is already
+        │      marked for background init, use those directly
+        ├─ else resolve plan
+        │      ├─ try load generated plan resource
+        │      │      ├─ if compatible → use precomputed candidates
+        │      │      └─ else if runtime fallback enabled → compute plan
+        │      └─ planCandidates(beanFactory)         ── via BeanDependencyGraph
+        │
         ├─ if disabled / executor already set / no candidates → return (sequential)
         │
-        ├─ planCandidates(beanFactory)               ── via BeanDependencyGraph
         ├─ markForBackgroundInit(each candidate)      ── setBackgroundInit(true)
         ├─ beanFactory.setBootstrapExecutor(pool)
         └─ register ContextRefreshedEvent listener → executor.shutdown()
@@ -138,6 +150,31 @@ The post-processor implements both `BeanFactoryPostProcessor` and
 post-processor or as an early bean-factory initializer. It is `PriorityOrdered`
 with **lowest precedence**, so it runs *after* every other post-processor and sees
 the final, complete set of bean definitions.
+
+### 3.2 Build-time plan generation
+
+During Spring AOT processing, `ParallelBootstrapAotProcessor` inspects the bean
+factory only when Spring Booster has been enabled for that application context and
+the settings are AOT-compatible (`buildTimePlanningEnabled` and the default candidate
+filter). It reuses `ParallelBootstrapPlanner` — which delegates candidate selection to
+the very same `planCandidates` algorithm used at runtime, so every relaxation is
+preserved — to compute the exact same conservative plan and serializes it as
+`META-INF/spring-booster/parallel-bootstrap.plan`.
+
+The generated plan stores:
+
+* the ordered background-candidate bean names,
+* the forced-mainline bean names,
+* the sync/co-location dependency view,
+* a settings fingerprint (covering every relaxation setting),
+* a bean-factory fingerprint.
+
+At runtime, the post-processor first reuses any bean definitions the AOT-generated
+initializer already pre-marked for background init. Failing that, it loads the plan
+resource: if the stored fingerprints still match the current settings and bean
+factory, Spring Booster uses the precomputed candidate list directly. Otherwise it
+ignores the generated plan and falls back to the runtime planner unless the user has
+explicitly required a generated plan (`generatedPlanRequired`).
 
 ---
 
@@ -338,6 +375,25 @@ Setting `backgroundFactoryMethodBeans(true)` (builder) or
 entirely — even when dynamic configurations are present — making every `@Bean` bean
 eligible for maximum parallelism, at the cost of reintroducing the invisible by-type pull
 risk, so it should be paired with a `candidateFilter` scoped to beans known to be safe.
+
+**Bytecode lookup-detection (experimental).** The reflective classification above errs
+toward *dynamic* on coarse structural signals, so a configuration that merely *declares*
+a captured-context / provider / `@Lazy` member — but never actually dereferences it — is
+flagged dynamic and (because co-location is context-wide) forces every `@Bean` bean
+mainline. The opt-in `bytecodeLookupDetection(true)` (builder) /
+`@EnableParallelBootstrap(bytecodeLookupDetection = true)` setting refines this: when the
+reflective pass flags a configuration as dynamic, `BytecodeLookupDetector` scans the
+class (and its superclasses) with Spring's repackaged ASM for an *actual* lookup — a
+`getBean*`/`getBeanProvider`/`getBeansOfType` call on a `BeanFactory`/`ApplicationContext`,
+an `ObjectProvider`/`ObjectFactory`/`Provider` dereference, or a CGLIB `@Bean`
+self-invocation. The scan is three-valued: it returns `PURE` only when the whole readable
+hierarchy contained none of those, `DYNAMIC` on the first match, and `INCONCLUSIVE` on any
+I/O or parse failure. Only a `PURE` result downgrades the reflective classification; an
+`INCONCLUSIVE` (or missing class file) scan leaves the conservative *dynamic* verdict in
+place. The refinement therefore only ever *relaxes* a false positive and never makes a
+genuinely dynamic configuration look pure, so the context-wide co-location invariant is
+preserved. Because parsing class files is comparatively expensive, this is intended for
+build-time (Spring AOT) planning, off the startup critical path.
 
 #### 5.2.2 Deferred provider edges (opt-in)
 
