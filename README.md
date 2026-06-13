@@ -19,14 +19,19 @@ if anything goes wrong.
 > autowiring** in addition to explicit references, and candidate selection is
 > **connectivity-safe**: a bean is parallelized only when no dependency edge connects
 > it — in either direction — to a bean that runs on the main thread. On top of that,
-> beans produced by `@Bean` **factory methods are kept on the main thread by default**
-> (co-located with their `@Configuration` class), because configuration classes are
-> the main source of dynamic, by-type lookups (`getBean`, `ObjectProvider`, `Lazy`)
-> that no static analysis can see. With these two rules the **default accept-all
-> filter boots a fully auto-configured Spring Boot web app reliably** (verified on
-> Spring Petclinic). Only your component-scanned beans are backgrounded by default; set
-> `backgroundFactoryMethodBeans(true)` to also parallelize `@Bean` beans for maximum
-> throughput (best paired with a `candidateFilter`). See
+> whenever the context contains a **dynamic** `@Configuration` (one that implements an
+> `Aware`/`*Configurer`/`*Customizer` callback, is a CGLIB-proxied full `@Configuration`,
+> or captures an `ApplicationContext`/`BeanFactory`/`ObjectProvider`/`@Lazy`), **every**
+> bean produced by a `@Bean` **factory method is kept on the main thread**, because such
+> classes are the main source of dynamic, by-type lookups (`getBean`, `ObjectProvider`,
+> `Lazy`) that no static analysis can see — and those lookups can target a `@Bean` of
+> *any* configuration, not just their own. Only when the context has *no* dynamic
+> configuration at all do `@Bean` beans — and the subtrees below them — background. With
+> these rules the **default accept-all filter boots a fully auto-configured Spring Boot web
+> app reliably** (verified on Spring Petclinic). Set `backgroundFactoryMethodBeans(true)`
+> to parallelize `@Bean` beans even when dynamic configurations are present, or
+> `deferProviderEdges(true)` to let `ObjectProvider`/`@Lazy` dependencies cross the
+> background boundary — both best paired with a `candidateFilter`. See
 > [SPECIFICATION.md](SPECIFICATION.md) §5.
 
 ---
@@ -43,11 +48,15 @@ if anything goes wrong.
   factory beans, framework infrastructure beans such as `BeanPostProcessor`s, anything
   you opt out, and any bean connected by a dependency edge to a bean that must run on
   the main thread.
-* **Keeps `@Bean` factory-method beans on the main thread by default**, co-located
-  with their `@Configuration` class — configuration classes are the main source of
-  dynamic, by-type lookups (`getBean`, `ObjectProvider`, `Lazy`) that static analysis
-  cannot see — which is what makes accept-all bootstrapping safe. Opt in with
-  `backgroundFactoryMethodBeans(true)` to parallelize those too.
+* **Keeps `@Bean` factory-method beans on the main thread by default whenever the
+  context contains a *dynamic* configuration**, co-located with their `@Configuration`
+  class — configurations that implement `Aware`/`*Configurer`/`*Customizer` callbacks, are
+  CGLIB-proxied full `@Configuration`s, or capture an `ApplicationContext`/`BeanFactory`/
+  `ObjectProvider`/`@Lazy` are the main source of dynamic, by-type lookups (`getBean`,
+  `ObjectProvider`, `Lazy`) that static analysis cannot see, and such a lookup can target a
+  `@Bean` of *any* configuration. If a context has no dynamic configuration at all, its
+  `@Bean` beans background. Opt in with `backgroundFactoryMethodBeans(true)` to parallelize
+  `@Bean` beans even when dynamic configurations are present.
 * Marks those beans for background initialization and installs a **bounded
   bootstrap thread pool** (sized by default at twice the available processor
   count) that the bean factory uses during `preInstantiateSingletons()`.
@@ -112,9 +121,15 @@ beanDefinition.setAttribute(ParallelBootstrapSettings.OPT_OUT_ATTRIBUTE, Boolean
 ### Backgrounding `@Bean` factory-method beans
 
 By default, beans produced by `@Bean` factory methods stay on the main thread
-(co-located with their `@Configuration` class) so that accept-all bootstrapping is
-safe — only component-scanned beans are parallelized. To also background `@Bean`
-beans for maximum parallelism, opt in:
+(co-located with their `@Configuration` class) **whenever the context contains a
+*dynamic* configuration** — one that implements an `Aware`/`*Configurer`/`*Customizer`
+callback, is a CGLIB-proxied full `@Configuration`, or captures an
+`ApplicationContext`/`BeanFactory`/`ObjectProvider`/`@Lazy`. Because such a configuration's
+invisible by-type lookups can pull a `@Bean` of *any* configuration (even a pure one),
+every `@Bean` bean is kept on the main thread in that case. Only in a context with no
+dynamic configuration at all are `@Bean` beans backgrounded automatically. To background
+`@Bean` beans even when dynamic configurations are present, for maximum parallelism, opt
+in:
 
 ```java
 @EnableParallelBootstrap(backgroundFactoryMethodBeans = true)
@@ -125,6 +140,57 @@ ParallelBootstrapSettings.builder().backgroundFactoryMethodBeans(true).build();
 This reintroduces the risk that a main-thread bean pulls a backgrounded `@Bean` bean
 by type through a call the analysis cannot see, so pair it with a `candidateFilter`
 scoped to beans you know are safe.
+
+### Deferring `ObjectProvider` / `@Lazy` edges
+
+`ObjectProvider`/`ObjectFactory`/`Provider`/`@Lazy` are Spring's escape hatch for
+crossing the main-thread → background boundary: the dependency is resolved *after*
+the dependent is constructed, so a main-thread bean depending on a background subtree
+only through a provider need not drag it back to the main thread. By default these edges
+are still treated as hard synchronous edges (a provider *could* be dereferenced eagerly
+during init, which static analysis cannot see). Opt in to let them cross the boundary:
+
+```java
+@EnableParallelBootstrap(deferProviderEdges = true)
+// or
+ParallelBootstrapSettings.builder().deferProviderEdges(true).build();
+```
+
+If a deferred provider is in fact dereferenced eagerly (e.g. inside a constructor or an
+init callback such as `WebMvcConfigurer.addArgumentResolvers`), the bootstrap fails fast
+with `BeanCurrentlyInCreationException` rather than producing wrong results — which is
+why this is opt-in.
+
+### Backgrounding shared-infrastructure consumers
+
+Some heavyweight beans are independent of each other yet share a single
+fully-constructed infrastructure singleton — the classic example is Flyway and
+Liquibase both reading the same `DataSource`. Normally the shared `DataSource` (a
+main-thread `depends-on` target) drags both consumers back onto the main thread,
+serializing them. The opt-in `backgroundSharedInfraConsumers` flag teaches the
+planner that *depending on an already-finished singleton is safe*, so those
+independent consumers can run concurrently:
+
+```java
+@EnableParallelBootstrap(
+        backgroundFactoryMethodBeans = true,
+        backgroundSharedInfraConsumers = true)
+// or
+ParallelBootstrapSettings.builder()
+        .backgroundFactoryMethodBeans(true)
+        .backgroundSharedInfraConsumers(true)
+        .build();
+```
+
+The relaxation is deliberately narrow: it only exempts a *completed-leaf barrier* —
+a forced-mainline, acyclic, terminal singleton with no background dependency of its
+own — from propagating main-thread-ness to the beans that merely *read* it. The
+reverse direction (a main-thread bean that depends on a candidate) is never exempted,
+because that is a genuine in-flight pull. It is off by default and falls back to
+sequential whenever the predicate is even slightly violated, so it stays faithful to
+the library's "sequential when in doubt" design goal. For `@Bean` consumers like
+Flyway/Liquibase, enable `backgroundFactoryMethodBeans` as well (the two flags are
+orthogonal).
 
 ## Requirements
 
