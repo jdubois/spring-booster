@@ -16,16 +16,7 @@
 
 package io.github.jdubois.springbooster;
 
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Deque;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadFactory;
@@ -135,7 +126,7 @@ public class ParallelBootstrapBeanFactoryPostProcessor
             return;
         }
         try {
-            List<String> candidates = planCandidates(beanFactory);
+            List<String> candidates = resolveCandidatePlan(beanFactory);
             if (candidates.isEmpty()) {
                 logger.debug("No eligible beans for parallel bootstrap; using sequential instantiation");
                 return;
@@ -156,150 +147,53 @@ public class ParallelBootstrapBeanFactoryPostProcessor
         }
     }
 
-    /**
-     * Determine the ordered list of bean names that are safe to instantiate in the
-     * background. Exposed with package visibility for testing.
-     *
-     * <p>Selection is <em>connectivity-safe</em>: a bean is only retained if no
-     * <em>sync</em> dependency edge (constructor/property reference or by-type /
-     * {@code @Autowired} / {@code ObjectProvider} autowiring) connects it &mdash; in
-     * either direction &mdash; to a bean that is instantiated on the main thread.
-     * This prevents the {@code BeanCurrentlyInCreationException} that occurs when a
-     * main-thread bean pulls a background bean by type (and the symmetric case of a
-     * background bean pulling a main-thread bean).
-     */
     List<String> planCandidates(ConfigurableListableBeanFactory beanFactory) {
-        List<String> allNames = List.of(beanFactory.getBeanDefinitionNames());
-        List<String> singletons = new ArrayList<>();
-        for (String beanName : allNames) {
-            BeanDefinition bd = safeGetBeanDefinition(beanFactory, beanName);
-            if (bd != null && !bd.isAbstract() && bd.isSingleton() && !bd.isLazyInit()) {
-                singletons.add(beanName);
-            }
-        }
-
-        // Build the graph over every registered bean definition so that all
-        // dependency relationships (including by-type autowiring) are visible. Unless the
-        // caller has opted in to backgrounding factory-method beans, co-locate every
-        // @Bean bean with its configuration class so the bootstrap stays safe against the
-        // dynamic, by-type lookups that configuration classes perform on the main thread.
-        BeanDependencyGraph graph =
-                BeanDependencyGraph.build(beanFactory, allNames, !this.settings.isBackgroundFactoryMethodBeans());
-        Set<String> cyclic = graph.beansInCycles();
-        Set<String> forcedMainline = collectForcedMainlineBeans(beanFactory);
-
-        // Beans that are structurally eligible for background initialization.
-        Set<String> eligible = new LinkedHashSet<>();
-        for (String beanName : singletons) {
-            if (isSafeCandidate(beanFactory, beanName, cyclic, forcedMainline)) {
-                eligible.add(beanName);
-            }
-        }
-
-        // Every node that is not eligible runs on the main thread; propagate that
-        // constraint across sync edges so no sync edge crosses the boundary.
-        Set<String> mainline = new LinkedHashSet<>(graph.getNodes());
-        mainline.removeAll(eligible);
-        propagateMainline(graph, eligible, mainline);
-
-        List<String> candidates = new ArrayList<>();
-        for (String beanName : singletons) {
-            if (eligible.contains(beanName)) {
-                candidates.add(beanName);
-            }
-        }
-        return candidates;
+        return new ParallelBootstrapPlanner(this.settings)
+                .createPlan(beanFactory)
+                .getCandidateBeanNames();
     }
 
-    /**
-     * Iteratively reclassify as main-thread any eligible bean that is joined by a sync
-     * edge (in either direction) to a bean already known to run on the main thread,
-     * until a fixpoint is reached.
-     */
-    private static void propagateMainline(BeanDependencyGraph graph, Set<String> eligible, Set<String> mainline) {
-        Map<String, Set<String>> dependents = new HashMap<>();
-        for (String node : graph.getNodes()) {
-            for (String dependency : graph.getSyncDependencies(node)) {
-                dependents
-                        .computeIfAbsent(dependency, key -> new LinkedHashSet<>())
-                        .add(node);
-            }
-        }
-        Deque<String> worklist = new ArrayDeque<>(mainline);
-        while (!worklist.isEmpty()) {
-            String current = worklist.poll();
-            Set<String> neighbors = new LinkedHashSet<>(graph.getSyncDependencies(current));
-            neighbors.addAll(dependents.getOrDefault(current, Collections.emptySet()));
-            for (String neighbor : neighbors) {
-                if (eligible.remove(neighbor)) {
-                    mainline.add(neighbor);
-                    worklist.add(neighbor);
+    private List<String> resolveCandidatePlan(ConfigurableListableBeanFactory beanFactory) {
+        ParallelBootstrapPlanner planner = new ParallelBootstrapPlanner(this.settings);
+        if (this.settings.isBuildTimePlanningEnabled()) {
+            ParallelBootstrapPlan generatedPlan = loadGeneratedPlan(beanFactory);
+            if (generatedPlan != null) {
+                if (planner.isPlanCompatible(beanFactory, generatedPlan)) {
+                    logger.debug("Using generated Spring Booster bootstrap plan");
+                    return generatedPlan.getCandidateBeanNames();
                 }
+                logger.info("Generated Spring Booster bootstrap plan is stale or incompatible; ignoring it");
+            }
+            if (this.settings.isGeneratedPlanRequired()) {
+                logger.warn("Generated Spring Booster bootstrap plan required but unavailable; using sequential bootstrap");
+                return List.of();
             }
         }
+        if (!this.settings.isRuntimePlanningEnabled()) {
+            logger.debug("Runtime bootstrap planning disabled; using sequential bootstrap");
+            return List.of();
+        }
+        return planner.createPlan(beanFactory).getCandidateBeanNames();
     }
 
-    /**
-     * Collect the names of beans that the framework force-instantiates on the main
-     * thread before backgrounding a dependent: the factory bean of any bean (for
-     * example a {@code @Configuration} class hosting {@code @Bean} methods) and the
-     * target of any {@code depends-on} declaration. Such beans cannot themselves be
-     * background candidates.
-     */
-    private static Set<String> collectForcedMainlineBeans(ConfigurableListableBeanFactory beanFactory) {
-        Set<String> forced = new HashSet<>();
-        for (String beanName : beanFactory.getBeanDefinitionNames()) {
-            BeanDefinition bd = safeGetMergedBeanDefinition(beanFactory, beanName);
-            if (bd == null) {
-                continue;
+    private @Nullable ParallelBootstrapPlan loadGeneratedPlan(ConfigurableListableBeanFactory beanFactory) {
+        ClassLoader classLoader = beanFactory.getBeanClassLoader();
+        if (classLoader == null) {
+            classLoader = getClass().getClassLoader();
+        }
+        if (classLoader == null) {
+            return null;
+        }
+        try (java.io.InputStream inputStream = classLoader.getResourceAsStream(ParallelBootstrapPlan.RESOURCE_LOCATION)) {
+            if (inputStream == null) {
+                return null;
             }
-            if (bd.getFactoryBeanName() != null) {
-                forced.add(bd.getFactoryBeanName());
-            }
-            String[] dependsOn = bd.getDependsOn();
-            if (dependsOn != null) {
-                Collections.addAll(forced, dependsOn);
-            }
+            byte[] content = inputStream.readAllBytes();
+            return ParallelBootstrapPlan.fromResourceContent(new String(content, java.nio.charset.StandardCharsets.UTF_8));
+        } catch (Exception ex) {
+            logger.info("Failed to read generated Spring Booster bootstrap plan; ignoring it", ex);
+            return null;
         }
-        return forced;
-    }
-
-    private boolean isSafeCandidate(
-            ConfigurableListableBeanFactory beanFactory,
-            String beanName,
-            Set<String> cyclic,
-            Set<String> forcedMainline) {
-
-        if (cyclic.contains(beanName)) {
-            // Beans in a cycle must be created on a single thread to preserve the
-            // early-singleton-reference handshake.
-            return false;
-        }
-        if (forcedMainline.contains(beanName)) {
-            // A shared factory bean or depends-on target must be created synchronously
-            // on the main thread.
-            return false;
-        }
-        BeanDefinition bd = safeGetBeanDefinition(beanFactory, beanName);
-        if (bd == null || ParallelBootstrapSettings.isOptedOut(bd)) {
-            return false;
-        }
-        if (!(bd instanceof AbstractBeanDefinition)) {
-            // Cannot mark a non-AbstractBeanDefinition for background init.
-            return false;
-        }
-        Class<?> type = safeGetType(beanFactory, beanName);
-        if (type != null && isInfrastructureType(type)) {
-            return false;
-        }
-        return this.settings.getCandidateFilter().test(beanName);
-    }
-
-    private static boolean isInfrastructureType(Class<?> type) {
-        return (BeanPostProcessor.class.isAssignableFrom(type)
-                || BeanFactoryPostProcessor.class.isAssignableFrom(type)
-                || BeanFactoryInitializer.class.isAssignableFrom(type)
-                || SmartInitializingSingleton.class.isAssignableFrom(type));
     }
 
     private void markForBackgroundInit(ConfigurableListableBeanFactory beanFactory, String beanName) {
@@ -332,32 +226,6 @@ public class ParallelBootstrapBeanFactoryPostProcessor
             executor.shutdown();
         };
         beanFactory.registerSingleton(listenerName, listener);
-    }
-
-    private static @Nullable BeanDefinition safeGetBeanDefinition(
-            ConfigurableListableBeanFactory beanFactory, String beanName) {
-        try {
-            return beanFactory.getBeanDefinition(beanName);
-        } catch (RuntimeException ex) {
-            return null;
-        }
-    }
-
-    private static @Nullable BeanDefinition safeGetMergedBeanDefinition(
-            ConfigurableListableBeanFactory beanFactory, String beanName) {
-        try {
-            return beanFactory.getMergedBeanDefinition(beanName);
-        } catch (RuntimeException ex) {
-            return null;
-        }
-    }
-
-    private static @Nullable Class<?> safeGetType(ConfigurableListableBeanFactory beanFactory, String beanName) {
-        try {
-            return beanFactory.getType(beanName, false);
-        } catch (RuntimeException ex) {
-            return null;
-        }
     }
 
     /**

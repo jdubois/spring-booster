@@ -52,18 +52,30 @@ public final class ParallelBootstrapSettings {
 
     private final boolean backgroundFactoryMethodBeans;
 
+    private final boolean buildTimePlanningEnabled;
+
+    private final boolean runtimePlanningEnabled;
+
+    private final boolean generatedPlanRequired;
+
     private ParallelBootstrapSettings(
             boolean enabled,
             int poolSize,
             String threadNamePrefix,
             Predicate<String> candidateFilter,
-            boolean backgroundFactoryMethodBeans) {
+            boolean backgroundFactoryMethodBeans,
+            boolean buildTimePlanningEnabled,
+            boolean runtimePlanningEnabled,
+            boolean generatedPlanRequired) {
 
         this.enabled = enabled;
         this.poolSize = poolSize;
         this.threadNamePrefix = threadNamePrefix;
         this.candidateFilter = candidateFilter;
         this.backgroundFactoryMethodBeans = backgroundFactoryMethodBeans;
+        this.buildTimePlanningEnabled = buildTimePlanningEnabled;
+        this.runtimePlanningEnabled = runtimePlanningEnabled;
+        this.generatedPlanRequired = generatedPlanRequired;
     }
 
     /**
@@ -125,6 +137,33 @@ public final class ParallelBootstrapSettings {
     }
 
     /**
+     * Whether build-time AOT plan generation is enabled.
+     * @return whether build-time planning is enabled
+     */
+    public boolean isBuildTimePlanningEnabled() {
+        return this.buildTimePlanningEnabled;
+    }
+
+    /**
+     * Whether runtime graph computation may be used when no valid generated plan is
+     * available.
+     * @return whether runtime planning is enabled
+     */
+    public boolean isRuntimePlanningEnabled() {
+        return this.runtimePlanningEnabled;
+    }
+
+    /**
+     * Whether a generated build-time plan is required. When {@code true}, Spring
+     * Booster never falls back to runtime planning and simply keeps bootstrap
+     * sequential if the generated plan is missing or stale.
+     * @return whether a generated plan is required
+     */
+    public boolean isGeneratedPlanRequired() {
+        return this.generatedPlanRequired;
+    }
+
+    /**
      * Create settings with sensible defaults: enabled, a pool size of twice the
      * number of available processors, the {@code parallel-bootstrap-} thread prefix,
      * and a candidate filter that accepts every bean.
@@ -165,6 +204,10 @@ public final class ParallelBootstrapSettings {
         return (beanDefinition != null && Boolean.TRUE.equals(beanDefinition.getAttribute(OPT_OUT_ATTRIBUTE)));
     }
 
+    boolean hasDefaultCandidateFilter() {
+        return this.candidateFilter == Builder.DEFAULT_CANDIDATE_FILTER;
+    }
+
     /**
      * Builder for {@link ParallelBootstrapSettings}.
      */
@@ -176,9 +219,17 @@ public final class ParallelBootstrapSettings {
 
         private String threadNamePrefix = "parallel-bootstrap-";
 
-        private Predicate<String> candidateFilter = beanName -> true;
+        static final Predicate<String> DEFAULT_CANDIDATE_FILTER = beanName -> true;
+
+        private Predicate<String> candidateFilter = DEFAULT_CANDIDATE_FILTER;
 
         private boolean backgroundFactoryMethodBeans = false;
+
+        private boolean buildTimePlanningEnabled = true;
+
+        private boolean runtimePlanningEnabled = true;
+
+        private boolean generatedPlanRequired = false;
 
         private Builder() {}
 
@@ -244,6 +295,40 @@ public final class ParallelBootstrapSettings {
         }
 
         /**
+         * Set whether build-time AOT planning is enabled. Defaults to {@code true}, so
+         * Spring Booster emits a reusable generated plan during AOT processing whenever
+         * the settings are AOT-compatible.
+         * @param buildTimePlanningEnabled whether build-time planning is enabled
+         * @return this builder
+         */
+        public Builder buildTimePlanningEnabled(boolean buildTimePlanningEnabled) {
+            this.buildTimePlanningEnabled = buildTimePlanningEnabled;
+            return this;
+        }
+
+        /**
+         * Set whether runtime graph computation may be used when no valid generated
+         * plan is available. Defaults to {@code true}.
+         * @param runtimePlanningEnabled whether runtime planning is enabled
+         * @return this builder
+         */
+        public Builder runtimePlanningEnabled(boolean runtimePlanningEnabled) {
+            this.runtimePlanningEnabled = runtimePlanningEnabled;
+            return this;
+        }
+
+        /**
+         * Set whether a generated plan is required. Defaults to {@code false}, which
+         * allows falling back to runtime planning when enabled.
+         * @param generatedPlanRequired whether a generated plan is required
+         * @return this builder
+         */
+        public Builder generatedPlanRequired(boolean generatedPlanRequired) {
+            this.generatedPlanRequired = generatedPlanRequired;
+            return this;
+        }
+
+        /**
          * Build the immutable {@link ParallelBootstrapSettings} instance.
          * @return the immutable settings instance
          */
@@ -253,7 +338,10 @@ public final class ParallelBootstrapSettings {
                     this.poolSize,
                     this.threadNamePrefix,
                     this.candidateFilter,
-                    this.backgroundFactoryMethodBeans);
+                    this.backgroundFactoryMethodBeans,
+                    this.buildTimePlanningEnabled,
+                    this.runtimePlanningEnabled,
+                    this.generatedPlanRequired);
         }
     }
 }

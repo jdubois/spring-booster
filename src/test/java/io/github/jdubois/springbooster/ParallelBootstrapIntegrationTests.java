@@ -18,6 +18,8 @@ package io.github.jdubois.springbooster;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.io.ByteArrayInputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import org.junit.jupiter.api.Test;
@@ -139,6 +141,54 @@ class ParallelBootstrapIntegrationTests {
             context.refresh();
             assertThat(context.getBeansOfType(ComponentRecordingBean.class)).hasSize(4);
             assertThat(ComponentRecordingBean.creationThreads).anyMatch(name -> name.startsWith("parallel-bootstrap-"));
+        }
+    }
+
+    @Test
+    void generatedPlanIsUsedWhenRuntimePlanningDisabled() {
+        RecordingConfig.creationThreads.clear();
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                .backgroundFactoryMethodBeans(true)
+                .runtimePlanningEnabled(false)
+                .build();
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            new ParallelBootstrapApplicationContextInitializer(settings).initialize(context);
+            context.register(PlainRecordingConfig.class);
+            ParallelBootstrapPlan plan = new ParallelBootstrapPlanner(settings).createPlan(context.getBeanFactory());
+            context.setClassLoader(new PlanResourceClassLoader(getClass().getClassLoader(), plan.toResourceContent()));
+            context.refresh();
+            assertThat(RecordingConfig.creationThreads).anyMatch(name -> name.startsWith("parallel-bootstrap-"));
+        }
+    }
+
+    @Test
+    void invalidGeneratedPlanFallsBackToRuntimePlanning() {
+        RecordingConfig.creationThreads.clear();
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                .backgroundFactoryMethodBeans(true)
+                .build();
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            new ParallelBootstrapApplicationContextInitializer(settings).initialize(context);
+            context.register(PlainRecordingConfig.class);
+            context.setClassLoader(new PlanResourceClassLoader(getClass().getClassLoader(), "broken-plan"));
+            context.refresh();
+            assertThat(RecordingConfig.creationThreads).anyMatch(name -> name.startsWith("parallel-bootstrap-"));
+        }
+    }
+
+    @Test
+    void requiredGeneratedPlanDisablesParallelBootstrapWhenPlanIsInvalid() {
+        RecordingConfig.creationThreads.clear();
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                .backgroundFactoryMethodBeans(true)
+                .generatedPlanRequired(true)
+                .build();
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            new ParallelBootstrapApplicationContextInitializer(settings).initialize(context);
+            context.register(PlainRecordingConfig.class);
+            context.setClassLoader(new PlanResourceClassLoader(getClass().getClassLoader(), "broken-plan"));
+            context.refresh();
+            assertThat(RecordingConfig.creationThreads).noneMatch(name -> name.startsWith("parallel-bootstrap-"));
         }
     }
 
@@ -291,6 +341,24 @@ class ParallelBootstrapIntegrationTests {
 
         ComponentRecordingBean() {
             creationThreads.add(Thread.currentThread().getName());
+        }
+    }
+
+    static final class PlanResourceClassLoader extends ClassLoader {
+
+        private final byte[] content;
+
+        PlanResourceClassLoader(ClassLoader parent, String content) {
+            super(parent);
+            this.content = content.getBytes(StandardCharsets.UTF_8);
+        }
+
+        @Override
+        public java.io.InputStream getResourceAsStream(String name) {
+            if (ParallelBootstrapPlan.RESOURCE_LOCATION.equals(name)) {
+                return new ByteArrayInputStream(this.content);
+            }
+            return super.getResourceAsStream(name);
         }
     }
 }

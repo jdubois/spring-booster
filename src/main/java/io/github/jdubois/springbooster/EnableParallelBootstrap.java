@@ -93,4 +93,26 @@ public @interface EnableParallelBootstrap {
      * @see ParallelBootstrapSettings#isBackgroundFactoryMethodBeans()
      */
     boolean backgroundFactoryMethodBeans() default false;
+
+    /**
+     * Whether Spring Booster should precompute a reusable build-time plan during
+     * Spring AOT processing. Defaults to {@code true}.
+     * @return whether build-time planning is enabled
+     */
+    boolean buildTimePlanningEnabled() default true;
+
+    /**
+     * Whether Spring Booster may compute the bean graph at runtime when no valid
+     * generated plan is available. Defaults to {@code true}.
+     * @return whether runtime planning is enabled
+     */
+    boolean runtimePlanningEnabled() default true;
+
+    /**
+     * Whether a generated build-time plan is required. When {@code true}, Spring
+     * Booster skips parallel bootstrap rather than recomputing the plan at runtime if
+     * the generated plan is missing or stale.
+     * @return whether a generated plan is required
+     */
+    boolean generatedPlanRequired() default false;
 }
