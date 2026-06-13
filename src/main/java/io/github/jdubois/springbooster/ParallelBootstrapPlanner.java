@@ -103,6 +103,12 @@ final class ParallelBootstrapPlanner {
                         .equals(plan.getBeanFactoryFingerprint());
     }
 
+    /**
+     * Compute a stable fingerprint of the serializable settings that influence
+     * build-time plan compatibility. A runtime-loaded generated plan is only used when
+     * this fingerprint still matches the active settings, otherwise the plan is
+     * treated as stale and ignored.
+     */
     static String fingerprintSettings(ParallelBootstrapSettings settings) {
         return sha256(String.join(
                 "|",

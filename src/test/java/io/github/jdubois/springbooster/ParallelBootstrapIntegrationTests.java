@@ -36,7 +36,7 @@ import org.springframework.context.annotation.Configuration;
  */
 class ParallelBootstrapIntegrationTests {
 
-    private static final String EMPTY_PLAN = "";
+    private static final String EMPTY_PLAN_CONTENT = "";
 
     private static final String BROKEN_PLAN = "broken-plan";
 
@@ -156,7 +156,7 @@ class ParallelBootstrapIntegrationTests {
                 .build();
         try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
             PlanResourceClassLoader classLoader =
-                    new PlanResourceClassLoader(getClass().getClassLoader(), EMPTY_PLAN);
+                    new PlanResourceClassLoader(getClass().getClassLoader(), EMPTY_PLAN_CONTENT);
             new ParallelBootstrapApplicationContextInitializer(settings).initialize(context);
             for (int i = 0; i < 4; i++) {
                 context.registerBeanDefinition("component" + i, new RootBeanDefinition(ComponentRecordingBean.class));

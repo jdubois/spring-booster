@@ -41,6 +41,10 @@ final class ParallelBootstrapPlan {
 
     private static final String FORMAT_VERSION = "1";
 
+    private static final int MAX_ABBREVIATED_LENGTH = 80;
+
+    private static final int TRUNCATED_PREFIX_LENGTH = 77;
+
     private final List<String> candidateBeanNames;
 
     private final Set<String> forcedMainlineBeanNames;
@@ -175,6 +179,6 @@ final class ParallelBootstrapPlan {
     }
 
     private static String abbreviate(String value) {
-        return (value.length() <= 80 ? value : value.substring(0, 77) + "...");
+        return (value.length() <= MAX_ABBREVIATED_LENGTH ? value : value.substring(0, TRUNCATED_PREFIX_LENGTH) + "...");
     }
 }

@@ -161,11 +161,13 @@ public class ParallelBootstrapBeanFactoryPostProcessor
                     logger.debug("Using generated Spring Booster bootstrap plan");
                     return generatedPlan.getCandidateBeanNames();
                 }
-                logger.info("Generated Spring Booster bootstrap plan is stale or incompatible; ignoring it");
+                logger.info(
+                        "Generated Spring Booster bootstrap plan fingerprint does not match current settings or bean definitions; ignoring it");
             }
             if (this.settings.isGeneratedPlanRequired()) {
                 logger.warn(
-                        "Generated Spring Booster bootstrap plan required but unavailable; using sequential bootstrap");
+                        "Generated Spring Booster bootstrap plan required but not found or incompatible; using sequential bootstrap."
+                                + " Ensure AOT processing completed successfully or set generatedPlanRequired to false");
                 return List.of();
             }
         }
