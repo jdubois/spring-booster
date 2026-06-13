@@ -34,6 +34,8 @@ final class ParallelBootstrapInfrastructure {
     static final String POST_PROCESSOR_BEAN_NAME =
             "io.github.jdubois.springbooster.internalParallelBootstrapPostProcessor";
 
+    private static final String SETTINGS_ATTRIBUTE = ParallelBootstrapInfrastructure.class.getName() + ".settings";
+
     private ParallelBootstrapInfrastructure() {}
 
     static void register(BeanDefinitionRegistry registry, ParallelBootstrapSettings settings) {
@@ -45,6 +47,7 @@ final class ParallelBootstrapInfrastructure {
                 .addConstructorArgValue(settings)
                 .setRole(BeanDefinition.ROLE_INFRASTRUCTURE)
                 .getBeanDefinition();
+        beanDefinition.setAttribute(SETTINGS_ATTRIBUTE, settings);
         registry.registerBeanDefinition(POST_PROCESSOR_BEAN_NAME, beanDefinition);
     }
 
@@ -52,6 +55,10 @@ final class ParallelBootstrapInfrastructure {
         BeanDefinition beanDefinition = safeGetBeanDefinition(beanFactory, POST_PROCESSOR_BEAN_NAME);
         if (beanDefinition == null) {
             return null;
+        }
+        Object settingsAttribute = beanDefinition.getAttribute(SETTINGS_ATTRIBUTE);
+        if (settingsAttribute instanceof ParallelBootstrapSettings settings) {
+            return settings;
         }
         List<ValueHolder> argumentValues =
                 beanDefinition.getConstructorArgumentValues().getGenericArgumentValues();

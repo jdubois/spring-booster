@@ -99,10 +99,13 @@ All code lives in a single package: `io.github.jdubois.springbooster`.
 
 | Class | Responsibility |
 |---|---|
-| `EnableParallelBootstrap` | Public opt-in annotation. `@Import`s the registrar. Carries tuning attributes (`enabled`, `poolSize`, `threadNamePrefix`, `backgroundFactoryMethodBeans`). |
+| `EnableParallelBootstrap` | Public opt-in annotation. `@Import`s the registrar. Carries tuning attributes (`enabled`, `poolSize`, `threadNamePrefix`, `backgroundFactoryMethodBeans`, and build-time planning/fallback flags). |
 | `ParallelBootstrapRegistrar` | `ImportBeanDefinitionRegistrar` activated by the annotation. Translates annotation attributes into `ParallelBootstrapSettings` and registers the post-processor as an infrastructure bean (idempotently). |
 | `ParallelBootstrapApplicationContextInitializer` | `ApplicationContextInitializer` entry point for programmatic / Spring Boot (`spring.factories`) registration, with no need for the annotation. |
-| `ParallelBootstrapSettings` | Immutable configuration (pool size, thread-name prefix, kill-switch, candidate `Predicate`, `backgroundFactoryMethodBeans` toggle). Built via a fluent `Builder`. Defines the per-bean opt-out attribute. |
+| `ParallelBootstrapSettings` | Immutable configuration (pool size, thread-name prefix, kill-switch, candidate `Predicate`, `backgroundFactoryMethodBeans` toggle, and build-time planning/fallback flags). Built via a fluent `Builder`. Defines the per-bean opt-out attribute. |
+| `ParallelBootstrapPlanner` | Shared planner used both at runtime and during AOT generation. Reuses the existing graph and safety rules to produce a conservative bootstrap plan plus compatibility fingerprints. |
+| `ParallelBootstrapPlan` | Serialized build-time plan containing the eligible background beans, forced-mainline beans, sync/co-location constraints, and compatibility fingerprints. |
+| `ParallelBootstrapAotProcessor` | Spring AOT processor that computes the conservative plan at build time and emits it as a generated classpath resource. |
 | `BeanDependencyGraph` | Pure in-memory dependency graph of the bean definitions. Models both declared references **and** by-type autowiring edges (via `AutowiredEdgeResolver`), classifying each edge as *forced* or *sync*. Provides topological layering (Kahn) and cycle detection (Tarjan). Never triggers bean creation. |
 | `AutowiredEdgeResolver` | Reflectively resolves the by-type / `@Autowired` / `ObjectProvider` dependency edges that the declarations do not reveal (`@Bean` method params, autowired constructors, `@Autowired` fields/methods), unwrapping `ObjectProvider`/`ObjectFactory`/`Provider`/`Optional`/collections/maps/arrays. Resolves candidate names with eager init disabled, so it never instantiates a bean. |
 | `ParallelBootstrapBeanFactoryPostProcessor` | The engine. Plans candidates (connectivity-safe selection), marks them for background init, installs the bounded executor, and registers a listener to shut it down after refresh. |
@@ -119,9 +122,13 @@ ParallelBootstrapRegistrar.registerBeanDefinitions(...)
         ▼
 ParallelBootstrapBeanFactoryPostProcessor.postProcessBeanFactory(beanFactory)
         │
+        ├─ try load generated plan resource
+        │      ├─ if compatible → use precomputed candidates
+        │      └─ else if runtime fallback enabled → compute plan
+        │
         ├─ if disabled / executor already set / no candidates → return (sequential)
         │
-        ├─ planCandidates(beanFactory)               ── via BeanDependencyGraph
+        ├─ planCandidates(beanFactory)               ── via ParallelBootstrapPlanner / BeanDependencyGraph
         ├─ markForBackgroundInit(each candidate)      ── setBackgroundInit(true)
         ├─ beanFactory.setBootstrapExecutor(pool)
         └─ register ContextRefreshedEvent listener → executor.shutdown()
@@ -135,6 +142,28 @@ The post-processor implements both `BeanFactoryPostProcessor` and
 post-processor or as an early bean-factory initializer. It is `PriorityOrdered`
 with **lowest precedence**, so it runs *after* every other post-processor and sees
 the final, complete set of bean definitions.
+
+### 3.2 Build-time plan generation
+
+During Spring AOT processing, `ParallelBootstrapAotProcessor` inspects the bean
+factory only when Spring Booster has been enabled for that application context and
+the settings are AOT-compatible. It reuses `ParallelBootstrapPlanner` to compute the
+exact same conservative plan used at runtime and serializes it as
+`META-INF/spring-booster/parallel-bootstrap.plan`.
+
+The generated plan stores:
+
+* the ordered background-candidate bean names,
+* the forced-mainline bean names,
+* the sync/co-location dependency view,
+* a settings fingerprint,
+* a bean-factory fingerprint.
+
+At runtime, the post-processor loads that resource first. If the stored
+fingerprints still match the current settings and bean factory, Spring Booster uses
+the precomputed candidate list directly. Otherwise it ignores the generated plan and
+falls back to the runtime planner unless the user has explicitly required a generated
+plan.
 
 ---
 

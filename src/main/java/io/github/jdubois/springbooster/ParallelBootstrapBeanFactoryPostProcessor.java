@@ -177,10 +177,18 @@ public class ParallelBootstrapBeanFactoryPostProcessor
     }
 
     private @Nullable ParallelBootstrapPlan loadGeneratedPlan(ConfigurableListableBeanFactory beanFactory) {
-        ClassLoader classLoader = beanFactory.getBeanClassLoader();
-        if (classLoader == null) {
-            classLoader = getClass().getClassLoader();
+        for (ClassLoader classLoader : new ClassLoader[] {
+            beanFactory.getBeanClassLoader(), Thread.currentThread().getContextClassLoader(), getClass().getClassLoader()
+        }) {
+            ParallelBootstrapPlan plan = loadGeneratedPlan(classLoader);
+            if (plan != null) {
+                return plan;
+            }
         }
+        return null;
+    }
+
+    private @Nullable ParallelBootstrapPlan loadGeneratedPlan(@Nullable ClassLoader classLoader) {
         if (classLoader == null) {
             return null;
         }
@@ -226,6 +234,24 @@ public class ParallelBootstrapBeanFactoryPostProcessor
             executor.shutdown();
         };
         beanFactory.registerSingleton(listenerName, listener);
+    }
+
+    private static @Nullable BeanDefinition safeGetBeanDefinition(
+            ConfigurableListableBeanFactory beanFactory, String beanName) {
+        try {
+            return beanFactory.getBeanDefinition(beanName);
+        } catch (RuntimeException ex) {
+            return null;
+        }
+    }
+
+    private static @Nullable BeanDefinition safeGetMergedBeanDefinition(
+            ConfigurableListableBeanFactory beanFactory, String beanName) {
+        try {
+            return beanFactory.getMergedBeanDefinition(beanName);
+        } catch (RuntimeException ex) {
+            return null;
+        }
     }
 
     /**

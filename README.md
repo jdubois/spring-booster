@@ -48,6 +48,9 @@ if anything goes wrong.
   dynamic, by-type lookups (`getBean`, `ObjectProvider`, `Lazy`) that static analysis
   cannot see — which is what makes accept-all bootstrapping safe. Opt in with
   `backgroundFactoryMethodBeans(true)` to parallelize those too.
+* Can **precompute the conservative bootstrap plan at build time** during Spring AOT
+  processing, package it as a generated resource, and reuse it at runtime instead of
+  recomputing the bean graph on startup.
 * Marks those beans for background initialization and installs a **bounded
   bootstrap thread pool** (sized by default at twice the available processor
   count) that the bean factory uses during `preInstantiateSingletons()`.
@@ -74,6 +77,15 @@ Tuning attributes are available:
 @EnableParallelBootstrap(poolSize = 8, threadNamePrefix = "boot-", enabled = true)
 ```
 
+Build-time planning and fallback behavior can also be tuned:
+
+```java
+@EnableParallelBootstrap(
+        buildTimePlanningEnabled = true,
+        runtimePlanningEnabled = true,
+        generatedPlanRequired = false)
+```
+
 ### Programmatic (e.g. Spring Boot, or any code that builds the context)
 
 ```java
@@ -96,6 +108,9 @@ io.github.jdubois.springbooster.ParallelBootstrapApplicationContextInitializer
 ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
         .poolSize(8)
         .threadNamePrefix("boot-")
+        .buildTimePlanningEnabled(true)
+        .runtimePlanningEnabled(true)
+        .generatedPlanRequired(false)
         .candidateFilter(beanName -> beanName.startsWith("com.example."))
         .build();
 
@@ -125,6 +140,27 @@ ParallelBootstrapSettings.builder().backgroundFactoryMethodBeans(true).build();
 This reintroduces the risk that a main-thread bean pulls a backgrounded `@Bean` bean
 by type through a call the analysis cannot see, so pair it with a `candidateFilter`
 scoped to beans you know are safe.
+
+### Build-time planning (Spring AOT)
+
+When Spring AOT processing runs, Spring Booster can precompute its conservative
+parallel-bootstrap plan at build time and package it into the application as a
+generated resource. At runtime, Spring Booster loads that generated plan first and
+uses it directly when the current bean factory still matches the build-time
+fingerprint. If the generated plan is missing or stale, Spring Booster falls back to
+the existing runtime planner by default.
+
+Use the new settings to control this behavior:
+
+* `buildTimePlanningEnabled` — emit the generated plan during AOT processing
+* `runtimePlanningEnabled` — allow runtime graph recomputation when no valid plan is
+  available
+* `generatedPlanRequired` — disable fallback and stay sequential unless a valid
+  generated plan is present
+
+> **Limit:** the AOT plan reuses the same conservative safety rules as runtime
+> planning. It does **not** make dynamic bean lookups magically visible, so the
+> default safety behavior for `@Bean` factory-method beans remains unchanged.
 
 ## Requirements
 

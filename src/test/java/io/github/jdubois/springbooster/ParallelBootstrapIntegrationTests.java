@@ -146,18 +146,27 @@ class ParallelBootstrapIntegrationTests {
 
     @Test
     void generatedPlanIsUsedWhenRuntimePlanningDisabled() {
-        RecordingConfig.creationThreads.clear();
+        ComponentRecordingBean.creationThreads.clear();
         ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
-                .backgroundFactoryMethodBeans(true)
                 .runtimePlanningEnabled(false)
                 .build();
         try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            PlanResourceClassLoader classLoader = new PlanResourceClassLoader(getClass().getClassLoader(), "");
             new ParallelBootstrapApplicationContextInitializer(settings).initialize(context);
-            context.register(PlainRecordingConfig.class);
+            for (int i = 0; i < 4; i++) {
+                context.registerBeanDefinition("component" + i, new RootBeanDefinition(ComponentRecordingBean.class));
+            }
             ParallelBootstrapPlan plan = new ParallelBootstrapPlanner(settings).createPlan(context.getBeanFactory());
-            context.setClassLoader(new PlanResourceClassLoader(getClass().getClassLoader(), plan.toResourceContent()));
-            context.refresh();
-            assertThat(RecordingConfig.creationThreads).anyMatch(name -> name.startsWith("parallel-bootstrap-"));
+            classLoader.setContent(plan.toResourceContent());
+            ClassLoader previous = Thread.currentThread().getContextClassLoader();
+            Thread.currentThread().setContextClassLoader(classLoader);
+            try {
+                context.refresh();
+            } finally {
+                Thread.currentThread().setContextClassLoader(previous);
+            }
+            assertThat(classLoader.wasRequested()).isTrue();
+            assertThat(ComponentRecordingBean.creationThreads).anyMatch(name -> name.startsWith("parallel-bootstrap-"));
         }
     }
 
@@ -170,8 +179,13 @@ class ParallelBootstrapIntegrationTests {
         try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
             new ParallelBootstrapApplicationContextInitializer(settings).initialize(context);
             context.register(PlainRecordingConfig.class);
-            context.setClassLoader(new PlanResourceClassLoader(getClass().getClassLoader(), "broken-plan"));
-            context.refresh();
+            ClassLoader previous = Thread.currentThread().getContextClassLoader();
+            Thread.currentThread().setContextClassLoader(new PlanResourceClassLoader(getClass().getClassLoader(), "broken-plan"));
+            try {
+                context.refresh();
+            } finally {
+                Thread.currentThread().setContextClassLoader(previous);
+            }
             assertThat(RecordingConfig.creationThreads).anyMatch(name -> name.startsWith("parallel-bootstrap-"));
         }
     }
@@ -186,8 +200,13 @@ class ParallelBootstrapIntegrationTests {
         try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
             new ParallelBootstrapApplicationContextInitializer(settings).initialize(context);
             context.register(PlainRecordingConfig.class);
-            context.setClassLoader(new PlanResourceClassLoader(getClass().getClassLoader(), "broken-plan"));
-            context.refresh();
+            ClassLoader previous = Thread.currentThread().getContextClassLoader();
+            Thread.currentThread().setContextClassLoader(new PlanResourceClassLoader(getClass().getClassLoader(), "broken-plan"));
+            try {
+                context.refresh();
+            } finally {
+                Thread.currentThread().setContextClassLoader(previous);
+            }
             assertThat(RecordingConfig.creationThreads).noneMatch(name -> name.startsWith("parallel-bootstrap-"));
         }
     }
@@ -346,19 +365,30 @@ class ParallelBootstrapIntegrationTests {
 
     static final class PlanResourceClassLoader extends ClassLoader {
 
-        private final byte[] content;
+        private byte[] content;
+
+        private boolean requested;
 
         PlanResourceClassLoader(ClassLoader parent, String content) {
             super(parent);
+            setContent(content);
+        }
+
+        void setContent(String content) {
             this.content = content.getBytes(StandardCharsets.UTF_8);
         }
 
         @Override
         public java.io.InputStream getResourceAsStream(String name) {
             if (ParallelBootstrapPlan.RESOURCE_LOCATION.equals(name)) {
+                this.requested = true;
                 return new ByteArrayInputStream(this.content);
             }
             return super.getResourceAsStream(name);
+        }
+
+        boolean wasRequested() {
+            return this.requested;
         }
     }
 }
