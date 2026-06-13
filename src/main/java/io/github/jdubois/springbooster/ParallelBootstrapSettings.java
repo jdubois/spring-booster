@@ -363,6 +363,7 @@ public final class ParallelBootstrapSettings {
          * @see ParallelBootstrapSettings#getBackgroundBeanNames()
          */
         public Builder backgroundBeanNames(@Nullable Collection<String> backgroundBeanNames) {
+            // Treat null and empty identically: both mean "no allowlist", i.e. the empty set.
             this.backgroundBeanNames = (backgroundBeanNames == null || backgroundBeanNames.isEmpty())
                     ? Collections.emptySet()
                     : Collections.unmodifiableSet(new LinkedHashSet<>(backgroundBeanNames));
