@@ -19,19 +19,20 @@ if anything goes wrong.
 > autowiring** in addition to explicit references, and candidate selection is
 > **connectivity-safe**: a bean is parallelized only when no dependency edge connects
 > it — in either direction — to a bean that runs on the main thread. On top of that,
-> beans produced by `@Bean` **factory methods are kept on the main thread by default
-> only when their `@Configuration` class is *dynamic*** (it implements an `Aware`/
-> `*Configurer`/`*Customizer` callback, is a CGLIB-proxied full `@Configuration`, or
-> captures an `ApplicationContext`/`BeanFactory`/`ObjectProvider`/`@Lazy`), because such
+> whenever the context contains a **dynamic** `@Configuration` (one that implements an
+> `Aware`/`*Configurer`/`*Customizer` callback, is a CGLIB-proxied full `@Configuration`,
+> or captures an `ApplicationContext`/`BeanFactory`/`ObjectProvider`/`@Lazy`), **every**
+> bean produced by a `@Bean` **factory method is kept on the main thread**, because such
 > classes are the main source of dynamic, by-type lookups (`getBean`, `ObjectProvider`,
-> `Lazy`) that no static analysis can see. *Pure* configurations (plain
-> `return new X(injectedParams)`) let their beans — and the subtrees below them —
-> background. With these rules the **default accept-all filter boots a fully
-> auto-configured Spring Boot web app reliably** (verified on Spring Petclinic). Set
-> `backgroundFactoryMethodBeans(true)` to also parallelize the `@Bean` beans of dynamic
-> configurations, or `deferProviderEdges(true)` to let `ObjectProvider`/`@Lazy`
-> dependencies cross the background boundary — both best paired with a `candidateFilter`.
-> See [SPECIFICATION.md](SPECIFICATION.md) §5.
+> `Lazy`) that no static analysis can see — and those lookups can target a `@Bean` of
+> *any* configuration, not just their own. Only when the context has *no* dynamic
+> configuration at all do `@Bean` beans — and the subtrees below them — background. With
+> these rules the **default accept-all filter boots a fully auto-configured Spring Boot web
+> app reliably** (verified on Spring Petclinic). Set `backgroundFactoryMethodBeans(true)`
+> to parallelize `@Bean` beans even when dynamic configurations are present, or
+> `deferProviderEdges(true)` to let `ObjectProvider`/`@Lazy` dependencies cross the
+> background boundary — both best paired with a `candidateFilter`. See
+> [SPECIFICATION.md](SPECIFICATION.md) §5.
 
 ---
 
@@ -47,14 +48,15 @@ if anything goes wrong.
   factory beans, framework infrastructure beans such as `BeanPostProcessor`s, anything
   you opt out, and any bean connected by a dependency edge to a bean that must run on
   the main thread.
-* **Keeps `@Bean` factory-method beans on the main thread by default only for
-  *dynamic* configurations**, co-located with their `@Configuration` class —
-  configurations that implement `Aware`/`*Configurer`/`*Customizer` callbacks, are
+* **Keeps `@Bean` factory-method beans on the main thread by default whenever the
+  context contains a *dynamic* configuration**, co-located with their `@Configuration`
+  class — configurations that implement `Aware`/`*Configurer`/`*Customizer` callbacks, are
   CGLIB-proxied full `@Configuration`s, or capture an `ApplicationContext`/`BeanFactory`/
   `ObjectProvider`/`@Lazy` are the main source of dynamic, by-type lookups (`getBean`,
-  `ObjectProvider`, `Lazy`) that static analysis cannot see. *Pure* configurations let
-  their beans background. Opt in with `backgroundFactoryMethodBeans(true)` to parallelize
-  the beans of dynamic configurations too.
+  `ObjectProvider`, `Lazy`) that static analysis cannot see, and such a lookup can target a
+  `@Bean` of *any* configuration. If a context has no dynamic configuration at all, its
+  `@Bean` beans background. Opt in with `backgroundFactoryMethodBeans(true)` to parallelize
+  `@Bean` beans even when dynamic configurations are present.
 * Marks those beans for background initialization and installs a **bounded
   bootstrap thread pool** (sized by default at twice the available processor
   count) that the bean factory uses during `preInstantiateSingletons()`.
@@ -119,12 +121,15 @@ beanDefinition.setAttribute(ParallelBootstrapSettings.OPT_OUT_ATTRIBUTE, Boolean
 ### Backgrounding `@Bean` factory-method beans
 
 By default, beans produced by `@Bean` factory methods stay on the main thread
-(co-located with their `@Configuration` class) **only when that configuration is
-*dynamic*** — it implements an `Aware`/`*Configurer`/`*Customizer` callback, is a
-CGLIB-proxied full `@Configuration`, or captures an `ApplicationContext`/`BeanFactory`/
-`ObjectProvider`/`@Lazy`. Beans of *pure* configurations are backgrounded automatically.
-To also background the `@Bean` beans of *dynamic* configurations for maximum
-parallelism, opt in:
+(co-located with their `@Configuration` class) **whenever the context contains a
+*dynamic* configuration** — one that implements an `Aware`/`*Configurer`/`*Customizer`
+callback, is a CGLIB-proxied full `@Configuration`, or captures an
+`ApplicationContext`/`BeanFactory`/`ObjectProvider`/`@Lazy`. Because such a configuration's
+invisible by-type lookups can pull a `@Bean` of *any* configuration (even a pure one),
+every `@Bean` bean is kept on the main thread in that case. Only in a context with no
+dynamic configuration at all are `@Bean` beans backgrounded automatically. To background
+`@Bean` beans even when dynamic configurations are present, for maximum parallelism, opt
+in:
 
 ```java
 @EnableParallelBootstrap(backgroundFactoryMethodBeans = true)
