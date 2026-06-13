@@ -787,7 +787,6 @@ public class ParallelBootstrapBeanFactoryPostProcessor
                 poolSize, poolSize, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(), threadFactory);
     }
 
-<<<<<<< HEAD
     /**
      * Ensure the executor installed by {@link #createBoundedExecutor()} is the one Spring
      * actually uses for background bean instantiation, by registering it as the
@@ -819,10 +818,7 @@ public class ParallelBootstrapBeanFactoryPostProcessor
                 + "' bean so it is used for background instantiation");
     }
 
-    private void registerShutdownHook(ConfigurableListableBeanFactory beanFactory, ThreadPoolExecutor executor) {
-=======
     private void registerShutdownHook(ConfigurableListableBeanFactory beanFactory, ExecutorService executor) {
->>>>>>> origin/copilot/use-virtual-threads-evaluation
         // Shut the pool down right after the context has refreshed so it does not
         // linger for the lifetime of the context. The listener is registered as a
         // manual singleton so that it is detected by the context's event multicaster.

@@ -231,7 +231,6 @@ class ParallelBootstrapBeanFactoryPostProcessorTests {
     }
 
     @Test
-<<<<<<< HEAD
     void serializesSharedInfraConsumersByDefault() {
         // dataSource is a shared, terminal main-thread leaf (forced mainline by being a
         // depends-on target). Two independent consumers read it by reference. By default
@@ -543,7 +542,9 @@ class ParallelBootstrapBeanFactoryPostProcessorTests {
 
     private void register(String beanName, Class<?> type) {
         this.beanFactory.registerBeanDefinition(beanName, new RootBeanDefinition(type));
-=======
+    }
+
+    @Test
     void virtualThreadsInstallVirtualThreadExecutor() throws Exception {
         registerSingleton("a");
         ParallelBootstrapSettings settings =
@@ -556,7 +557,6 @@ class ParallelBootstrapBeanFactoryPostProcessorTests {
         CompletableFuture<Boolean> wasVirtual =
                 CompletableFuture.supplyAsync(() -> Thread.currentThread().isVirtual(), executor);
         assertThat(wasVirtual.get(5, TimeUnit.SECONDS)).isTrue();
->>>>>>> origin/copilot/use-virtual-threads-evaluation
     }
 
     private void registerSingleton(String beanName) {

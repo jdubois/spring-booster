@@ -70,7 +70,6 @@ public final class ParallelBootstrapSettings {
 
     private final boolean backgroundFactoryMethodBeans;
 
-<<<<<<< HEAD
     private final boolean deferProviderEdges;
 
     private final boolean backgroundSharedInfraConsumers;
@@ -86,16 +85,14 @@ public final class ParallelBootstrapSettings {
     private final boolean runtimePlanningEnabled;
 
     private final boolean generatedPlanRequired;
-=======
+
     private final boolean useVirtualThreads;
->>>>>>> origin/copilot/use-virtual-threads-evaluation
 
     private ParallelBootstrapSettings(
             boolean enabled,
             int poolSize,
             String threadNamePrefix,
             Predicate<String> candidateFilter,
-<<<<<<< HEAD
             Set<String> backgroundBeanNames,
             boolean backgroundFactoryMethodBeans,
             boolean deferProviderEdges,
@@ -105,11 +102,8 @@ public final class ParallelBootstrapSettings {
             boolean bytecodeLookupDetection,
             boolean buildTimePlanningEnabled,
             boolean runtimePlanningEnabled,
-            boolean generatedPlanRequired) {
-=======
-            boolean backgroundFactoryMethodBeans,
+            boolean generatedPlanRequired,
             boolean useVirtualThreads) {
->>>>>>> origin/copilot/use-virtual-threads-evaluation
 
         this.enabled = enabled;
         this.poolSize = poolSize;
@@ -117,7 +111,6 @@ public final class ParallelBootstrapSettings {
         this.candidateFilter = candidateFilter;
         this.backgroundBeanNames = backgroundBeanNames;
         this.backgroundFactoryMethodBeans = backgroundFactoryMethodBeans;
-<<<<<<< HEAD
         this.deferProviderEdges = deferProviderEdges;
         this.backgroundSharedInfraConsumers = backgroundSharedInfraConsumers;
         this.barrierBeanNames = barrierBeanNames;
@@ -126,9 +119,7 @@ public final class ParallelBootstrapSettings {
         this.buildTimePlanningEnabled = buildTimePlanningEnabled;
         this.runtimePlanningEnabled = runtimePlanningEnabled;
         this.generatedPlanRequired = generatedPlanRequired;
-=======
         this.useVirtualThreads = useVirtualThreads;
->>>>>>> origin/copilot/use-virtual-threads-evaluation
     }
 
     /**
@@ -212,7 +203,6 @@ public final class ParallelBootstrapSettings {
     }
 
     /**
-<<<<<<< HEAD
      * Whether by-type dependency edges reached only through an {@code ObjectProvider},
      * {@code ObjectFactory} or {@code Provider} wrapper, or through a {@code @Lazy}
      * injection point, are treated as <em>deferred</em>.
@@ -382,7 +372,9 @@ public final class ParallelBootstrapSettings {
      */
     public boolean isGeneratedPlanRequired() {
         return this.generatedPlanRequired;
-=======
+    }
+
+    /**
      * Whether the bootstrap executor should run each backgrounded bean on a
      * <em>virtual thread</em> instead of on the bounded platform-thread pool.
      * <p>Defaults to {@code false}, which installs the bounded
@@ -403,7 +395,6 @@ public final class ParallelBootstrapSettings {
      */
     public boolean isUseVirtualThreads() {
         return this.useVirtualThreads;
->>>>>>> origin/copilot/use-virtual-threads-evaluation
     }
 
     /**
@@ -484,7 +475,6 @@ public final class ParallelBootstrapSettings {
 
         private boolean backgroundFactoryMethodBeans = false;
 
-<<<<<<< HEAD
         private boolean deferProviderEdges = false;
 
         private boolean backgroundSharedInfraConsumers = false;
@@ -500,9 +490,8 @@ public final class ParallelBootstrapSettings {
         private boolean runtimePlanningEnabled = true;
 
         private boolean generatedPlanRequired = false;
-=======
+
         private boolean useVirtualThreads = false;
->>>>>>> origin/copilot/use-virtual-threads-evaluation
 
         private Builder() {}
 
@@ -600,7 +589,6 @@ public final class ParallelBootstrapSettings {
         }
 
         /**
-<<<<<<< HEAD
          * Set whether by-type edges reached only through an {@code ObjectProvider},
          * {@code ObjectFactory} or {@code Provider} wrapper, or through a {@code @Lazy}
          * injection point, are treated as <em>deferred</em> and therefore excluded from
@@ -764,7 +752,10 @@ public final class ParallelBootstrapSettings {
          */
         public Builder generatedPlanRequired(boolean generatedPlanRequired) {
             this.generatedPlanRequired = generatedPlanRequired;
-=======
+            return this;
+        }
+
+        /**
          * Set whether the bootstrap executor should run each backgrounded bean on a
          * virtual thread instead of on the bounded platform-thread pool. Defaults to
          * {@code false}. When {@code true}, an unbounded virtual-thread-per-task
@@ -775,7 +766,6 @@ public final class ParallelBootstrapSettings {
          */
         public Builder useVirtualThreads(boolean useVirtualThreads) {
             this.useVirtualThreads = useVirtualThreads;
->>>>>>> origin/copilot/use-virtual-threads-evaluation
             return this;
         }
 
@@ -789,7 +779,6 @@ public final class ParallelBootstrapSettings {
                     this.poolSize,
                     this.threadNamePrefix,
                     this.candidateFilter,
-<<<<<<< HEAD
                     this.backgroundBeanNames,
                     this.backgroundFactoryMethodBeans,
                     this.deferProviderEdges,
@@ -799,11 +788,8 @@ public final class ParallelBootstrapSettings {
                     this.bytecodeLookupDetection,
                     this.buildTimePlanningEnabled,
                     this.runtimePlanningEnabled,
-                    this.generatedPlanRequired);
-=======
-                    this.backgroundFactoryMethodBeans,
+                    this.generatedPlanRequired,
                     this.useVirtualThreads);
->>>>>>> origin/copilot/use-virtual-threads-evaluation
         }
     }
 }

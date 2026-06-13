@@ -156,7 +156,6 @@ This reintroduces the risk that a main-thread bean pulls a backgrounded `@Bean` 
 by type through a call the analysis cannot see, so pair it with a `candidateFilter`
 scoped to beans you know are safe.
 
-<<<<<<< HEAD
 ### Backgrounding specific `@Bean` beans (allowlist)
 
 If you want to background only a **few specific** heavyweight `@Bean` beans — for
@@ -348,7 +347,6 @@ ParallelBootstrapSettings.builder().bytecodeLookupDetection(true).build();
 > off the startup critical path. It changes which configurations are classified as
 > dynamic, but never relaxes the context-wide co-location rule when a genuine
 > dynamic lookup remains.
-=======
 ### Using virtual threads for the bootstrap executor
 
 By default the bootstrap executor is a **bounded platform-thread pool** sized at
@@ -375,7 +373,6 @@ workloads should keep the default bounded pool, whose size tracks the processor 
 Note that the real ceiling on startup speedup is the **critical path through the bean
 dependency graph**: no threading model can beat the longest chain of dependent beans.
 Virtual threads help most when there are many *independent*, blocking beans.
->>>>>>> origin/copilot/use-virtual-threads-evaluation
 
 ## Requirements
 

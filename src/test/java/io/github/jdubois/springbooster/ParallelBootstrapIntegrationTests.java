@@ -181,7 +181,6 @@ class ParallelBootstrapIntegrationTests {
     }
 
     @Test
-<<<<<<< HEAD
     void frameworkBootstrapExecutorAliasDoesNotShadowLibraryPool() {
         ComponentRecordingBean.creationThreads.clear();
         AtomicInteger foreignThreadCounter = new AtomicInteger(1);
@@ -256,20 +255,10 @@ class ParallelBootstrapIntegrationTests {
             // (the failure observed booting Spring Security's EnableWebSecurityConfiguration).
             new ParallelBootstrapApplicationContextInitializer().initialize(context);
             context.register(AnnotatedConfig.class, PullerConfig.class);
-=======
-    void virtualThreadsRunBackgroundedBeansOnVirtualThreads() {
-        ComponentRecordingBean.creationThreads.clear();
-        ComponentRecordingBean.virtualCreationThreads.clear();
-        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
-            ParallelBootstrapSettings settings =
-                    ParallelBootstrapSettings.builder().useVirtualThreads(true).build();
-            new ParallelBootstrapApplicationContextInitializer(settings).initialize(context);
->>>>>>> origin/copilot/use-virtual-threads-evaluation
             for (int i = 0; i < 4; i++) {
                 context.registerBeanDefinition("component" + i, new RootBeanDefinition(ComponentRecordingBean.class));
             }
             context.refresh();
-<<<<<<< HEAD
 
             assertThat(context.getBeansWithAnnotation(Marker.class).values())
                     .hasAtLeastOneElementOfType(AnnotatedConfig.class);
@@ -337,7 +326,22 @@ class ParallelBootstrapIntegrationTests {
             assertThat(context.getBeansOfType(RecordingBean.class)).hasSize(4);
             assertThat(CoBackgroundGroupConfig.creationThreads)
                     .anyMatch(name -> name.startsWith("parallel-bootstrap-"));
-=======
+        }
+    }
+
+    @Test
+    void virtualThreadsRunBackgroundedBeansOnVirtualThreads() {
+        ComponentRecordingBean.creationThreads.clear();
+        ComponentRecordingBean.virtualCreationThreads.clear();
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            ParallelBootstrapSettings settings =
+                    ParallelBootstrapSettings.builder().useVirtualThreads(true).build();
+            new ParallelBootstrapApplicationContextInitializer(settings).initialize(context);
+            for (int i = 0; i < 4; i++) {
+                context.registerBeanDefinition("component" + i, new RootBeanDefinition(ComponentRecordingBean.class));
+            }
+            context.refresh();
+
             assertThat(context.getBeansOfType(ComponentRecordingBean.class)).hasSize(4);
             // At least one backgrounded bean was created on a (named) virtual thread.
             assertThat(ComponentRecordingBean.virtualCreationThreads)
@@ -345,7 +349,6 @@ class ParallelBootstrapIntegrationTests {
                     .allMatch(name -> name.startsWith("parallel-bootstrap-"));
             // The bootstrap executor is still shut down once the context has refreshed.
             assertThat(context.getBeanFactory().getBootstrapExecutor()).isNull();
->>>>>>> origin/copilot/use-virtual-threads-evaluation
         }
     }
 

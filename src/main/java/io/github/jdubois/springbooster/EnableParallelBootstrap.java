@@ -111,7 +111,6 @@ public @interface EnableParallelBootstrap {
     boolean backgroundFactoryMethodBeans() default false;
 
     /**
-<<<<<<< HEAD
      * Whether by-type dependency edges reached only through an {@code ObjectProvider},
      * {@code ObjectFactory} or {@code Provider} wrapper, or through a {@code @Lazy}
      * injection point, are treated as <em>deferred</em> and excluded from the
@@ -222,7 +221,8 @@ public @interface EnableParallelBootstrap {
          */
         String[] value();
     }
-=======
+
+    /**
      * Whether the bootstrap executor should run each backgrounded bean on a virtual
      * thread instead of on the bounded platform-thread pool. Defaults to
      * {@code false}. When {@code true}, an unbounded virtual-thread-per-task executor
@@ -236,5 +236,4 @@ public @interface EnableParallelBootstrap {
      * @see ParallelBootstrapSettings#isUseVirtualThreads()
      */
     boolean useVirtualThreads() default false;
->>>>>>> origin/copilot/use-virtual-threads-evaluation
 }
