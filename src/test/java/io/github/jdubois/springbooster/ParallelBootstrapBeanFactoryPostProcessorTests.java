@@ -19,6 +19,9 @@ package io.github.jdubois.springbooster;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.beans.factory.config.ConstructorArgumentValues;
@@ -178,6 +181,21 @@ class ParallelBootstrapBeanFactoryPostProcessorTests {
         new ParallelBootstrapBeanFactoryPostProcessor().postProcessBeanFactory(this.beanFactory);
 
         assertThat(isBackgroundInit("a")).isFalse();
+    }
+
+    @Test
+    void virtualThreadsInstallVirtualThreadExecutor() throws Exception {
+        registerSingleton("a");
+        ParallelBootstrapSettings settings =
+                ParallelBootstrapSettings.builder().useVirtualThreads(true).build();
+
+        new ParallelBootstrapBeanFactoryPostProcessor(settings).postProcessBeanFactory(this.beanFactory);
+
+        Executor executor = this.beanFactory.getBootstrapExecutor();
+        assertThat(executor).isNotNull();
+        CompletableFuture<Boolean> wasVirtual =
+                CompletableFuture.supplyAsync(() -> Thread.currentThread().isVirtual(), executor);
+        assertThat(wasVirtual.get(5, TimeUnit.SECONDS)).isTrue();
     }
 
     private void registerSingleton(String beanName) {

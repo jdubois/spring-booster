@@ -99,10 +99,10 @@ All code lives in a single package: `io.github.jdubois.springbooster`.
 
 | Class | Responsibility |
 |---|---|
-| `EnableParallelBootstrap` | Public opt-in annotation. `@Import`s the registrar. Carries tuning attributes (`enabled`, `poolSize`, `threadNamePrefix`, `backgroundFactoryMethodBeans`). |
+| `EnableParallelBootstrap` | Public opt-in annotation. `@Import`s the registrar. Carries tuning attributes (`enabled`, `poolSize`, `threadNamePrefix`, `backgroundFactoryMethodBeans`, `useVirtualThreads`). |
 | `ParallelBootstrapRegistrar` | `ImportBeanDefinitionRegistrar` activated by the annotation. Translates annotation attributes into `ParallelBootstrapSettings` and registers the post-processor as an infrastructure bean (idempotently). |
 | `ParallelBootstrapApplicationContextInitializer` | `ApplicationContextInitializer` entry point for programmatic / Spring Boot (`spring.factories`) registration, with no need for the annotation. |
-| `ParallelBootstrapSettings` | Immutable configuration (pool size, thread-name prefix, kill-switch, candidate `Predicate`, `backgroundFactoryMethodBeans` toggle). Built via a fluent `Builder`. Defines the per-bean opt-out attribute. |
+| `ParallelBootstrapSettings` | Immutable configuration (pool size, thread-name prefix, kill-switch, candidate `Predicate`, `backgroundFactoryMethodBeans` toggle, `useVirtualThreads` toggle). Built via a fluent `Builder`. Defines the per-bean opt-out attribute. |
 | `BeanDependencyGraph` | Pure in-memory dependency graph of the bean definitions. Models both declared references **and** by-type autowiring edges (via `AutowiredEdgeResolver`), classifying each edge as *forced* or *sync*. Provides topological layering (Kahn) and cycle detection (Tarjan). Never triggers bean creation. |
 | `AutowiredEdgeResolver` | Reflectively resolves the by-type / `@Autowired` / `ObjectProvider` dependency edges that the declarations do not reveal (`@Bean` method params, autowired constructors, `@Autowired` fields/methods), unwrapping `ObjectProvider`/`ObjectFactory`/`Provider`/`Optional`/collections/maps/arrays. Resolves candidate names with eager init disabled, so it never instantiates a bean. |
 | `ParallelBootstrapBeanFactoryPostProcessor` | The engine. Plans candidates (connectivity-safe selection), marks them for background init, installs the bounded executor, and registers a listener to shut it down after refresh. |
@@ -324,11 +324,19 @@ cost of reintroducing the invisible by-type pull risk, so it should be paired wi
 
 ## 6. Lifecycle and resource management
 
-* The bootstrap executor is a `ThreadPoolExecutor` with a **fixed, bounded** size
-  (`max(2, availableProcessors() * 2)` by default) and **daemon** threads named with the
-  configured prefix (default `parallel-bootstrap-`).
+* The bootstrap executor is, by default, a `ThreadPoolExecutor` with a **fixed,
+  bounded** size (`max(2, availableProcessors() * 2)`) and **daemon** threads named
+  with the configured prefix (default `parallel-bootstrap-`).
+* When `useVirtualThreads` is enabled (`@EnableParallelBootstrap(useVirtualThreads = true)`
+  or `ParallelBootstrapSettings.builder().useVirtualThreads(true)`), the executor is
+  instead an **unbounded virtual-thread-per-task** executor whose threads are named
+  with the same prefix; `poolSize` is ignored. This targets the frequently
+  blocking-bound nature of bean bootstrap and relies on the Java 25 baseline, where
+  blocking inside Spring's singleton-creation lock no longer pins a carrier (JDK 24,
+  JEP 491). The startup speedup ceiling remains the bean dependency graph's critical
+  path; CPU-bound workloads should keep the bounded pool.
 * A `ContextRefreshedEvent` listener (registered as a manual singleton so the event
-  multicaster detects it) clears the factory's bootstrap executor and shuts the pool
+  multicaster detects it) clears the factory's bootstrap executor and shuts it
   down **immediately after refresh**, so threads do not outlive bootstrap.
 * The **global kill-switch** (`enabled = false`) registers the post-processor but
   makes it a no-op, allowing the feature to be disabled without code removal.
@@ -343,7 +351,7 @@ cost of reintroducing the invisible by-type pull risk, so it should be paired wi
 * **Artifacts:** main jar, `-sources.jar`, `-javadoc.jar` and POM (the source and
   javadoc jars are attached during `package`). `./mvnw install` installs them to
   `~/.m2`.
-* **Build JDK:** Java 17. The build must run on a JDK 17 because the Palantir Java
+* **Build JDK:** Java 25. The build must run on a JDK 25 because the Palantir Java
   Format engine used by Spotless runs under the build JDK.
 * **Code formatting:** Spotless with Palantir Java Format
   (`./mvnw spotless:apply` to reformat; `spotless:check` is bound to the `verify`

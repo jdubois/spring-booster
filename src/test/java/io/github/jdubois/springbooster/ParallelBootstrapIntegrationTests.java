@@ -142,6 +142,28 @@ class ParallelBootstrapIntegrationTests {
         }
     }
 
+    @Test
+    void virtualThreadsRunBackgroundedBeansOnVirtualThreads() {
+        ComponentRecordingBean.creationThreads.clear();
+        ComponentRecordingBean.virtualCreationThreads.clear();
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            ParallelBootstrapSettings settings =
+                    ParallelBootstrapSettings.builder().useVirtualThreads(true).build();
+            new ParallelBootstrapApplicationContextInitializer(settings).initialize(context);
+            for (int i = 0; i < 4; i++) {
+                context.registerBeanDefinition("component" + i, new RootBeanDefinition(ComponentRecordingBean.class));
+            }
+            context.refresh();
+            assertThat(context.getBeansOfType(ComponentRecordingBean.class)).hasSize(4);
+            // At least one backgrounded bean was created on a (named) virtual thread.
+            assertThat(ComponentRecordingBean.virtualCreationThreads)
+                    .isNotEmpty()
+                    .allMatch(name -> name.startsWith("parallel-bootstrap-"));
+            // The bootstrap executor is still shut down once the context has refreshed.
+            assertThat(context.getBeanFactory().getBootstrapExecutor()).isNull();
+        }
+    }
+
     @Configuration(proxyBeanMethods = false)
     @EnableParallelBootstrap
     static class EnabledConfig {
@@ -289,8 +311,14 @@ class ParallelBootstrapIntegrationTests {
 
         static final Set<String> creationThreads = ConcurrentHashMap.newKeySet();
 
+        static final Set<String> virtualCreationThreads = ConcurrentHashMap.newKeySet();
+
         ComponentRecordingBean() {
-            creationThreads.add(Thread.currentThread().getName());
+            Thread current = Thread.currentThread();
+            creationThreads.add(current.getName());
+            if (current.isVirtual()) {
+                virtualCreationThreads.add(current.getName());
+            }
         }
     }
 }

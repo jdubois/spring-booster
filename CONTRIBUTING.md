@@ -7,9 +7,9 @@ quick orientation aimed at contributors and AI agents, see [AGENT.md](AGENT.md).
 
 ## Prerequisites
 
-- **Java 17**. The build is pinned to the Java 17 baseline because the Palantir
+- **Java 25**. The build is pinned to the Java 25 baseline because the Palantir
   Java Format engine used by Spotless runs under the build JDK. Point
-  `JAVA_HOME` at a JDK 17 before building.
+  `JAVA_HOME` at a JDK 25 before building.
 - **Maven Wrapper**. Use the committed `./mvnw` script; no system Maven
   installation is required.
 - The project targets **Spring Boot 4.1.0 / Spring Framework 7**. All dependency

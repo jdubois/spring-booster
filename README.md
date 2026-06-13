@@ -126,11 +126,38 @@ This reintroduces the risk that a main-thread bean pulls a backgrounded `@Bean` 
 by type through a call the analysis cannot see, so pair it with a `candidateFilter`
 scoped to beans you know are safe.
 
+### Using virtual threads for the bootstrap executor
+
+By default the bootstrap executor is a **bounded platform-thread pool** sized at
+twice the available processor count. Bean bootstrap is, however, frequently
+*blocking-bound* — opening connection pools, warming caches, establishing remote
+clients — and that is exactly the workload virtual threads are built for. Opt in to
+run **one virtual thread per backgrounded bean** instead of the bounded pool:
+
+```java
+@EnableParallelBootstrap(useVirtualThreads = true)
+// or
+ParallelBootstrapSettings.builder().useVirtualThreads(true).build();
+```
+
+When enabled, an unbounded virtual-thread-per-task executor is installed and the
+`poolSize` setting is ignored, so every independent blocking bean can make progress
+concurrently without the pool-size ceiling and without oversubscribing the platform
+carriers. This relies on the **Java 25 baseline**: since the fix for pinning on
+`synchronized` (JDK 24, [JEP 491](https://openjdk.org/jeps/491)), a virtual thread
+that blocks inside Spring's singleton-creation lock no longer pins its carrier, so
+the blocking-bound part of bootstrap parallelizes cleanly. Purely CPU-bound bootstrap
+workloads should keep the default bounded pool, whose size tracks the processor count.
+
+Note that the real ceiling on startup speedup is the **critical path through the bean
+dependency graph**: no threading model can beat the longest chain of dependent beans.
+Virtual threads help most when there are many *independent*, blocking beans.
+
 ## Requirements
 
 | | Version |
 |---|---|
-| Java | 17 or later |
+| Java | 25 or later |
 | Spring Framework | 7.0.8 (the stable release used by **Spring Boot 4.1.0**) |
 
 Spring Booster does not pin the Spring Framework version directly. Instead it
@@ -151,9 +178,9 @@ need a local Maven installation:
 This compiles the code, runs the test suite, assembles the `jar`, `-sources.jar`
 and `-javadoc.jar`, and verifies the code formatting.
 
-> **Build with a Java 17 JDK.** The Palantir Java Format engine used by Spotless
-> runs under the JDK that runs the build, so the build is verified against JDK 17
-> (the project's baseline). Point `JAVA_HOME` at a JDK 17 before building.
+> **Build with a Java 25 JDK.** The Palantir Java Format engine used by Spotless
+> runs under the JDK that runs the build, so the build is verified against JDK 25
+> (the project's baseline). Point `JAVA_HOME` at a JDK 25 before building.
 
 ### Code formatting
 
