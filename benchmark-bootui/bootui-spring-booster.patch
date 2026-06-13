@@ -36,7 +36,7 @@ new file mode 100644
 index 0000000..7f1237e
 --- /dev/null
 +++ b/bootui-sample-app/src/main/java/io/github/jdubois/bootui/sample/SampleParallelBootstrapInitializer.java
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,43 @@
 +package io.github.jdubois.bootui.sample;
 +
 +import io.github.jdubois.springbooster.ParallelBootstrapBeanFactoryPostProcessor;
@@ -66,10 +66,11 @@ index 0000000..7f1237e
 +        }
 +        // Third benchmark variant: also background mutually-independent consumers of a
 +        // shared, fully-constructed infrastructure leaf (Flyway + Liquibase over the same
-+        // DataSource). The completed-leaf barrier relaxation keeps factory-method @Bean
-+        // co-location active (so unrelated infrastructure such as Spring Security's
-+        // authenticationEventPublisher stays on the main thread) while freeing the pure
-+        // barrier consumers to overlap.
++        // DataSource). Enabling backgroundSharedInfraConsumers is self-contained: the
++        // library automatically keeps factory-method @Bean co-location active (so unrelated
++        // infrastructure such as Spring Security's authenticationEventPublisher stays on the
++        // main thread) and frees only the pure barrier consumers to overlap. No separate
++        // backgroundFactoryMethodBeans setting is required.
 +        boolean sharedInfra =
 +                Boolean.parseBoolean(environment.getProperty("sample.shared-infra-consumers", "false"));
 +        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()

@@ -212,10 +212,11 @@ class ParallelBootstrapIntegrationTests {
             // target). consumerA and consumerB are mutually independent and each only read
             // it -- the Flyway/Liquibase-over-a-shared-DataSource shape. With the
             // relaxation enabled they may be backgrounded and run concurrently while
-            // sharedInfra itself stays on the main thread.
+            // sharedInfra itself stays on the main thread. The flag keeps factory-method
+            // @Bean co-location active on its own, so backgroundFactoryMethodBeans is not
+            // needed.
             ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
                     .poolSize(4)
-                    .backgroundFactoryMethodBeans(true)
                     .backgroundSharedInfraConsumers(true)
                     .build();
             new ParallelBootstrapApplicationContextInitializer(settings).initialize(context);
