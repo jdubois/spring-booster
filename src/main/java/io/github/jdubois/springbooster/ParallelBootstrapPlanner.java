@@ -119,7 +119,9 @@ final class ParallelBootstrapPlanner {
     private static String fingerprintBeanFactory(
             ConfigurableListableBeanFactory beanFactory, List<String> beanDefinitionNames) {
         List<String> signatures = new ArrayList<>();
-        for (String beanName : beanDefinitionNames.stream().sorted().toList()) {
+        List<String> sortedBeanDefinitionNames = new ArrayList<>(beanDefinitionNames);
+        Collections.sort(sortedBeanDefinitionNames);
+        for (String beanName : sortedBeanDefinitionNames) {
             BeanDefinition bd = safeGetMergedBeanDefinition(beanFactory, beanName);
             signatures.add(beanDefinitionSignature(beanName, bd));
         }

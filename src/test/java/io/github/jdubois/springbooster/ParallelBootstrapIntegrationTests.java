@@ -36,6 +36,10 @@ import org.springframework.context.annotation.Configuration;
  */
 class ParallelBootstrapIntegrationTests {
 
+    private static final String EMPTY_PLAN = "";
+
+    private static final String BROKEN_PLAN = "broken-plan";
+
     @Test
     void contextRefreshesAndWiresBeansWithEnableAnnotation() {
         try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext(EnabledConfig.class)) {
@@ -152,7 +156,7 @@ class ParallelBootstrapIntegrationTests {
                 .build();
         try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
             PlanResourceClassLoader classLoader =
-                    new PlanResourceClassLoader(getClass().getClassLoader(), "");
+                    new PlanResourceClassLoader(getClass().getClassLoader(), EMPTY_PLAN);
             new ParallelBootstrapApplicationContextInitializer(settings).initialize(context);
             for (int i = 0; i < 4; i++) {
                 context.registerBeanDefinition("component" + i, new RootBeanDefinition(ComponentRecordingBean.class));
@@ -183,7 +187,7 @@ class ParallelBootstrapIntegrationTests {
             ClassLoader previous = Thread.currentThread().getContextClassLoader();
             Thread.currentThread()
                     .setContextClassLoader(
-                            new PlanResourceClassLoader(getClass().getClassLoader(), "broken-plan"));
+                            new PlanResourceClassLoader(getClass().getClassLoader(), BROKEN_PLAN));
             try {
                 context.refresh();
             } finally {
@@ -206,7 +210,7 @@ class ParallelBootstrapIntegrationTests {
             ClassLoader previous = Thread.currentThread().getContextClassLoader();
             Thread.currentThread()
                     .setContextClassLoader(
-                            new PlanResourceClassLoader(getClass().getClassLoader(), "broken-plan"));
+                            new PlanResourceClassLoader(getClass().getClassLoader(), BROKEN_PLAN));
             try {
                 context.refresh();
             } finally {

@@ -177,17 +177,15 @@ public class ParallelBootstrapBeanFactoryPostProcessor
     }
 
     private @Nullable ParallelBootstrapPlan loadGeneratedPlan(ConfigurableListableBeanFactory beanFactory) {
-        for (ClassLoader classLoader : new ClassLoader[] {
-            beanFactory.getBeanClassLoader(),
-            Thread.currentThread().getContextClassLoader(),
-            getClass().getClassLoader()
-        }) {
-            ParallelBootstrapPlan plan = loadGeneratedPlan(classLoader);
-            if (plan != null) {
-                return plan;
-            }
+        ParallelBootstrapPlan plan = loadGeneratedPlan(beanFactory.getBeanClassLoader());
+        if (plan != null) {
+            return plan;
         }
-        return null;
+        plan = loadGeneratedPlan(Thread.currentThread().getContextClassLoader());
+        if (plan != null) {
+            return plan;
+        }
+        return loadGeneratedPlan(getClass().getClassLoader());
     }
 
     private @Nullable ParallelBootstrapPlan loadGeneratedPlan(@Nullable ClassLoader classLoader) {

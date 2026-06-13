@@ -127,7 +127,7 @@ final class ParallelBootstrapPlan {
                 continue;
             }
             int separator = line.indexOf('=');
-            Assert.isTrue(separator > 0, () -> "Invalid plan line: " + line);
+            Assert.isTrue(separator > 0, () -> "Invalid plan line: " + abbreviate(line));
             properties.setProperty(line.substring(0, separator), line.substring(separator + 1));
         }
         Assert.isTrue(
@@ -172,5 +172,9 @@ final class ParallelBootstrapPlan {
 
     private static String decodeName(String value) {
         return new String(Base64.getUrlDecoder().decode(value), StandardCharsets.UTF_8);
+    }
+
+    private static String abbreviate(String value) {
+        return (value.length() <= 80 ? value : value.substring(0, 77) + "...");
     }
 }
