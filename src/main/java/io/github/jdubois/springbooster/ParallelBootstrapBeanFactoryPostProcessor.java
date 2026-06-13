@@ -43,7 +43,6 @@ import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
 import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.beans.factory.support.AbstractBeanDefinition;
-import org.springframework.beans.factory.support.BeanDefinitionRegistry;
 import org.springframework.context.ApplicationListener;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.event.ContextRefreshedEvent;
@@ -165,7 +164,7 @@ public class ParallelBootstrapBeanFactoryPostProcessor
             }
             ThreadPoolExecutor executor = createBoundedExecutor();
             beanFactory.setBootstrapExecutor(executor);
-            detachFrameworkBootstrapExecutorAlias(beanFactory);
+            claimBootstrapExecutorBeanName(beanFactory, executor);
             registerShutdownHook(beanFactory, executor);
             if (logger.isInfoEnabled()) {
                 logger.info("Parallel bootstrap enabled for " + candidates.size() + " bean(s) using a pool of "
@@ -770,29 +769,33 @@ public class ParallelBootstrapBeanFactoryPostProcessor
 
     /**
      * Ensure the executor installed by {@link #createBoundedExecutor()} is the one Spring
-     * actually uses for background bean instantiation.
+     * actually uses for background bean instantiation, by registering it as the
+     * {@code "bootstrapExecutor"} singleton
+     * ({@link ConfigurableApplicationContext#BOOTSTRAP_EXECUTOR_BEAN_NAME}).
      *
      * <p>{@code AbstractApplicationContext.finishBeanFactoryInitialization} overrides any
      * executor set through {@link ConfigurableListableBeanFactory#setBootstrapExecutor} with
-     * the bean named {@code "bootstrapExecutor"}
-     * ({@link ConfigurableApplicationContext#BOOTSTRAP_EXECUTOR_BEAN_NAME}) whenever such a
-     * bean exists. In a Spring Boot application that name is registered as an <em>alias</em>
-     * for the shared {@code applicationTaskExecutor}, so without intervention the dedicated
-     * pool configured here (its {@code poolSize} and {@code threadNamePrefix}) is silently
-     * ignored and bootstrap runs on Boot's shared task pool instead.
+     * the bean named {@code "bootstrapExecutor"} whenever such a bean exists. In a Spring Boot
+     * application, {@code TaskExecutorConfigurations.BootstrapExecutorConfiguration} registers
+     * a (non-ordered) {@code BeanFactoryPostProcessor} that aliases the shared
+     * {@code applicationTaskExecutor} to that name &mdash; but only when no
+     * {@code bootstrapExecutor} bean already exists. Because this {@code PriorityOrdered}
+     * post-processor runs <em>before</em> that alias post-processor, registering the dedicated
+     * pool here pre-empts the alias: Boot then skips it, and Spring resolves
+     * {@code "bootstrapExecutor"} to the pool configured here (its {@code poolSize} and
+     * {@code threadNamePrefix}) instead of Boot's shared task pool.
      *
-     * <p>Detaching that framework alias makes {@code containsBean("bootstrapExecutor")} return
-     * {@code false}, so the executor installed here is preserved and used. A genuine,
-     * explicitly defined {@code bootstrapExecutor} bean (an actual bean definition rather than
-     * an alias) is left untouched and still wins, honoring that explicit user choice.
+     * <p>If a {@code bootstrapExecutor} bean is already present (an explicitly defined user
+     * bean), it is left untouched and still wins, honoring that explicit choice.
      */
-    private void detachFrameworkBootstrapExecutorAlias(ConfigurableListableBeanFactory beanFactory) {
+    private void claimBootstrapExecutorBeanName(ConfigurableListableBeanFactory beanFactory, Executor executor) {
         String name = ConfigurableApplicationContext.BOOTSTRAP_EXECUTOR_BEAN_NAME;
-        if (beanFactory instanceof BeanDefinitionRegistry registry && registry.isAlias(name)) {
-            registry.removeAlias(name);
-            logger.debug("Detached the framework '" + name
-                    + "' alias so the Spring Booster bootstrap executor is used for background instantiation");
+        if (beanFactory.containsBean(name)) {
+            return;
         }
+        beanFactory.registerSingleton(name, executor);
+        logger.debug("Registered the Spring Booster bootstrap executor as the '" + name
+                + "' bean so it is used for background instantiation");
     }
 
     private void registerShutdownHook(ConfigurableListableBeanFactory beanFactory, ThreadPoolExecutor executor) {

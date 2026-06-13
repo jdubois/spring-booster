@@ -139,6 +139,8 @@ ParallelBootstrapBeanFactoryPostProcessor.postProcessBeanFactory(beanFactory)
         │
         ├─ markForBackgroundInit(each candidate)      ── setBackgroundInit(true)
         ├─ beanFactory.setBootstrapExecutor(pool)
+        ├─ register the pool as the "bootstrapExecutor" singleton (if absent) so it
+        │      is the executor actually used (see §6)
         └─ register ContextRefreshedEvent listener → executor.shutdown()
         ▼
 DefaultListableBeanFactory.preInstantiateSingletons()
@@ -613,6 +615,18 @@ than producing wrong results (design goal #1).
 * The bootstrap executor is a `ThreadPoolExecutor` with a **fixed, bounded** size
   (`max(2, availableProcessors() * 2)` by default) and **daemon** threads named with the
   configured prefix (default `parallel-bootstrap-`).
+* The pool is installed via `ConfigurableBeanFactory.setBootstrapExecutor(Executor)`.
+  However, `AbstractApplicationContext.finishBeanFactoryInitialization` later overrides any
+  programmatically set executor with the bean named `bootstrapExecutor`
+  (`ConfigurableApplicationContext.BOOTSTRAP_EXECUTOR_BEAN_NAME`) when one exists. In a Spring
+  Boot application, `TaskExecutorConfigurations.BootstrapExecutorConfiguration` registers a
+  (non-ordered) `BeanFactoryPostProcessor` that aliases the shared `applicationTaskExecutor` to
+  that name — but only when no `bootstrapExecutor` bean already exists. To keep the configured
+  pool effective, this `PriorityOrdered` post-processor (which runs **before** Boot's alias
+  post-processor) **registers its pool as the `bootstrapExecutor` singleton**. Boot then skips
+  the alias, and Spring resolves the bootstrap executor to the dedicated pool instead of Boot's
+  shared task pool. A genuine, explicitly defined `bootstrapExecutor` bean is left untouched and
+  still wins.
 * A `ContextRefreshedEvent` listener (registered as a manual singleton so the event
   multicaster detects it) clears the factory's bootstrap executor and shuts the pool
   down **immediately after refresh**, so threads do not outlive bootstrap.

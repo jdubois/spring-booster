@@ -20,8 +20,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.support.RootBeanDefinition;
+import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -172,6 +177,46 @@ class ParallelBootstrapIntegrationTests {
             context.refresh();
             assertThat(context.getBeansOfType(ComponentRecordingBean.class)).hasSize(4);
             assertThat(ComponentRecordingBean.creationThreads).anyMatch(name -> name.startsWith("parallel-bootstrap-"));
+        }
+    }
+
+    @Test
+    void frameworkBootstrapExecutorAliasDoesNotShadowLibraryPool() {
+        ComponentRecordingBean.creationThreads.clear();
+        AtomicInteger foreignThreadCounter = new AtomicInteger(1);
+        ThreadPoolExecutor foreignExecutor =
+                new ThreadPoolExecutor(2, 2, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(), runnable -> {
+                    Thread thread = new Thread(runnable, "foreign-task-" + foreignThreadCounter.getAndIncrement());
+                    thread.setDaemon(true);
+                    return thread;
+                });
+        BootstrapExecutorAliasConfig.foreignExecutor = foreignExecutor;
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            // Reproduce the Spring Boot setup: a shared "applicationTaskExecutor" plus a
+            // (bean-defined, non-ordered) post-processor that aliases it to the framework
+            // "bootstrapExecutor" name only when no such bean exists -- exactly like
+            // TaskExecutorConfigurations.BootstrapExecutorConfiguration. That alias post-processor
+            // runs after this library's PriorityOrdered post-processor, so the library must claim
+            // the "bootstrapExecutor" bean name first to keep using its own pool. Without that,
+            // Spring's finishBeanFactoryInitialization would background beans on the shared pool.
+            new ParallelBootstrapApplicationContextInitializer().initialize(context);
+            context.register(BootstrapExecutorAliasConfig.class);
+            for (int i = 0; i < 4; i++) {
+                context.registerBeanDefinition("component" + i, new RootBeanDefinition(ComponentRecordingBean.class));
+            }
+            context.refresh();
+
+            assertThat(context.getBeansOfType(ComponentRecordingBean.class)).hasSize(4);
+            // The library claimed the bootstrap-executor name, so the alias was never registered.
+            assertThat(((org.springframework.beans.factory.support.BeanDefinitionRegistry) context.getBeanFactory())
+                            .isAlias(ConfigurableApplicationContext.BOOTSTRAP_EXECUTOR_BEAN_NAME))
+                    .isFalse();
+            // Background beans run on the library's own pool, never on the foreign shared executor.
+            assertThat(ComponentRecordingBean.creationThreads).anyMatch(name -> name.startsWith("parallel-bootstrap-"));
+            assertThat(ComponentRecordingBean.creationThreads).noneMatch(name -> name.startsWith("foreign-task-"));
+        } finally {
+            BootstrapExecutorAliasConfig.foreignExecutor = null;
+            foreignExecutor.shutdown();
         }
     }
 
@@ -462,6 +507,33 @@ class ParallelBootstrapIntegrationTests {
 
         ComponentRecordingBean() {
             creationThreads.add(Thread.currentThread().getName());
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class BootstrapExecutorAliasConfig {
+
+        static volatile java.util.concurrent.Executor foreignExecutor;
+
+        @Bean(name = "applicationTaskExecutor")
+        java.util.concurrent.Executor applicationTaskExecutor() {
+            return foreignExecutor;
+        }
+
+        // Mimics Spring Boot's TaskExecutorConfigurations.BootstrapExecutorConfiguration: a
+        // non-ordered BeanFactoryPostProcessor that aliases applicationTaskExecutor to the
+        // framework bootstrap-executor name only when no bootstrapExecutor bean exists.
+        @Bean
+        static org.springframework.beans.factory.config.BeanFactoryPostProcessor bootstrapExecutorAliasPostProcessor() {
+            return beanFactory -> {
+                boolean hasBootstrap =
+                        beanFactory.containsBean(ConfigurableApplicationContext.BOOTSTRAP_EXECUTOR_BEAN_NAME);
+                boolean hasApplicationTaskExecutor = beanFactory.containsBean("applicationTaskExecutor");
+                if (!hasBootstrap && hasApplicationTaskExecutor) {
+                    beanFactory.registerAlias(
+                            "applicationTaskExecutor", ConfigurableApplicationContext.BOOTSTRAP_EXECUTOR_BEAN_NAME);
+                }
+            };
         }
     }
 
