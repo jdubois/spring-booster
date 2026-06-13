@@ -209,6 +209,18 @@ public class ParallelBootstrapBeanFactoryPostProcessor
                 !this.settings.isBackgroundFactoryMethodBeans() || this.settings.isBackgroundSharedInfraConsumers();
         BeanDependencyGraph graph = BeanDependencyGraph.build(
                 beanFactory, allNames, colocateFactoryMethodBeans, this.settings.isDeferProviderEdges());
+
+        // Drop the configuration -> @Bean co-location edge for any bean the user has
+        // explicitly allow-listed for background initialization (by name via
+        // backgroundBeanNames, or per-definition via FORCE_BACKGROUND_ATTRIBUTE). This is the
+        // targeted, per-bean counterpart of backgroundFactoryMethodBeans: only the named beans
+        // escape co-location, while every other @Bean bean stays on the main thread so the
+        // invisible by-type lookup channel stays closed for the rest of the context. The bean
+        // still has to clear every other safety gate below (cycle, forced-mainline, opt-out,
+        // infrastructure type, candidate filter) and the connectivity-safe propagation, so a
+        // genuinely entangled bean is pulled back to the main thread rather than misbehaving.
+        applyBackgroundAllowlist(beanFactory, graph);
+
         Set<String> cyclic = graph.beansInCycles();
         Set<String> forcedMainline = collectForcedMainlineBeans(beanFactory);
 
@@ -294,6 +306,40 @@ public class ParallelBootstrapBeanFactoryPostProcessor
                     mainline.add(neighbor);
                     worklist.add(neighbor);
                 }
+            }
+        }
+    }
+
+    /**
+     * Drop the configuration&rarr;{@code @Bean} <em>co-location</em> edge for every bean the
+     * user has explicitly allow-listed for background initialization &mdash; either by name
+     * through {@link ParallelBootstrapSettings#getBackgroundBeanNames()} or per-definition
+     * through {@link ParallelBootstrapSettings#FORCE_BACKGROUND_ATTRIBUTE}.
+     *
+     * <p>This is the targeted, per-bean counterpart of the context-wide
+     * {@code backgroundFactoryMethodBeans} flag: it removes <em>only</em> the co-location edge
+     * for the named beans, leaving every other {@code @Bean} bean co-located on the main
+     * thread so the invisible by-type lookup channel stays closed for the rest of the context.
+     * The relaxation only ever <em>removes</em> a sync edge; the bean must still clear every
+     * structural safety gate ({@link #isSafeCandidate}) and the connectivity-safe
+     * {@link #propagateMainline} pass, so a bean that is a forced-mainline
+     * {@code depends-on}/factory target, in a cycle, opted out, or joined by a genuine visible
+     * sync edge to a main-thread bean is kept on the main thread. An invisible eager by-type
+     * pull still fails fast with {@code BeanCurrentlyInCreationException} and falls back to
+     * sequential bootstrap (design goal #1).
+     */
+    private void applyBackgroundAllowlist(ConfigurableListableBeanFactory beanFactory, BeanDependencyGraph graph) {
+        Set<String> allowlist = this.settings.getBackgroundBeanNames();
+        for (String beanName : graph.getNodes()) {
+            boolean allowlisted = allowlist.contains(beanName)
+                    || ParallelBootstrapSettings.isForcedBackground(safeGetBeanDefinition(beanFactory, beanName));
+            if (!allowlisted) {
+                continue;
+            }
+            BeanDefinition mbd = safeGetMergedBeanDefinition(beanFactory, beanName);
+            String factoryBeanName = (mbd != null) ? mbd.getFactoryBeanName() : null;
+            if (factoryBeanName != null && graph.getNodes().contains(factoryBeanName)) {
+                graph.removeSyncEdge(factoryBeanName, beanName);
             }
         }
     }

@@ -316,6 +316,96 @@ class ParallelBootstrapBeanFactoryPostProcessorTests {
         assertThat(candidates).doesNotContain("flyway");
     }
 
+    @Test
+    void colocatesFactoryMethodBeanWithDynamicConfigurationByDefault() {
+        registerDynamicConfigWithProduct();
+
+        List<String> candidates = new ParallelBootstrapBeanFactoryPostProcessor().planCandidates(this.beanFactory);
+
+        // A dynamic configuration is present, so its @Bean product is co-located on the
+        // main thread by default.
+        assertThat(candidates).doesNotContain("product");
+    }
+
+    @Test
+    void backgroundsFactoryMethodBeanInAllowlist() {
+        registerDynamicConfigWithProduct();
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                .backgroundBeanNames("product")
+                .build();
+
+        List<String> candidates =
+                new ParallelBootstrapBeanFactoryPostProcessor(settings).planCandidates(this.beanFactory);
+
+        // Naming the product drops only its co-location edge, so it may now background even
+        // though the dynamic configuration stays on the main thread.
+        assertThat(candidates).contains("product").doesNotContain("config");
+    }
+
+    @Test
+    void backgroundsFactoryMethodBeanMarkedWithForceBackgroundAttribute() {
+        register("config", DynamicFactoryConfig.class);
+        RootBeanDefinition product = new RootBeanDefinition();
+        product.setFactoryBeanName("config");
+        product.setFactoryMethodName("product");
+        product.setAttribute(ParallelBootstrapSettings.FORCE_BACKGROUND_ATTRIBUTE, Boolean.TRUE);
+        this.beanFactory.registerBeanDefinition("product", product);
+
+        List<String> candidates = new ParallelBootstrapBeanFactoryPostProcessor().planCandidates(this.beanFactory);
+
+        assertThat(candidates).contains("product").doesNotContain("config");
+    }
+
+    @Test
+    void allowlistDoesNotBackgroundForcedMainlineDependsOnTarget() {
+        // flyway is a depends-on target of entityManagerFactory, so it is forced onto the
+        // main thread; allow-listing it must not override that structural safety rule.
+        registerSingleton("dataSource");
+        registerWithDependsOn("entityManagerFactory", "flyway");
+        registerWithConstructorRef("flyway", "dataSource");
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                .backgroundBeanNames("flyway")
+                .build();
+
+        List<String> candidates =
+                new ParallelBootstrapBeanFactoryPostProcessor(settings).planCandidates(this.beanFactory);
+
+        assertThat(candidates).doesNotContain("flyway");
+    }
+
+    @Test
+    void allowlistStillRespectsConnectivitySafety() {
+        // The allow-listed product is pulled by type by a main-thread consumer, so it must
+        // still be kept on the main thread despite losing its co-location edge.
+        register("config", DynamicFactoryConfig.class);
+        RootBeanDefinition product = new RootBeanDefinition(Leaf.class);
+        product.setFactoryBeanName("config");
+        product.setFactoryMethodName("product");
+        this.beanFactory.registerBeanDefinition("product", product);
+        this.beanFactory.registerBeanDefinition("consumer", new RootBeanDefinition(ConstructorConsumer.class));
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                .backgroundBeanNames("product")
+                .candidateFilter(name -> !name.equals("consumer"))
+                .build();
+
+        List<String> candidates =
+                new ParallelBootstrapBeanFactoryPostProcessor(settings).planCandidates(this.beanFactory);
+
+        assertThat(candidates).doesNotContain("product");
+    }
+
+    private void registerDynamicConfigWithProduct() {
+        register("config", DynamicFactoryConfig.class);
+        RootBeanDefinition product = new RootBeanDefinition(Leaf.class);
+        product.setFactoryBeanName("config");
+        product.setFactoryMethodName("product");
+        this.beanFactory.registerBeanDefinition("product", product);
+    }
+
+    private void register(String beanName, Class<?> type) {
+        this.beanFactory.registerBeanDefinition(beanName, new RootBeanDefinition(type));
+    }
+
     private void registerSingleton(String beanName) {
         this.beanFactory.registerBeanDefinition(beanName, new RootBeanDefinition(Object.class));
     }
@@ -341,6 +431,16 @@ class ParallelBootstrapBeanFactoryPostProcessorTests {
     static class SampleBeanPostProcessor implements BeanPostProcessor {}
 
     static class Leaf {}
+
+    static class DynamicFactoryConfig implements org.springframework.context.ApplicationContextAware {
+
+        @Override
+        public void setApplicationContext(org.springframework.context.ApplicationContext applicationContext) {}
+
+        Leaf product() {
+            return new Leaf();
+        }
+    }
 
     static class ConstructorConsumer {
         ConstructorConsumer(Leaf leaf) {}

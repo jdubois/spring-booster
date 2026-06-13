@@ -36,14 +36,16 @@ new file mode 100644
 index 0000000..7f1237e
 --- /dev/null
 +++ b/bootui-sample-app/src/main/java/io/github/jdubois/bootui/sample/SampleParallelBootstrapInitializer.java
-@@ -0,0 +1,43 @@
+@@ -0,0 +1,55 @@
 +package io.github.jdubois.bootui.sample;
 +
 +import io.github.jdubois.springbooster.ParallelBootstrapBeanFactoryPostProcessor;
 +import io.github.jdubois.springbooster.ParallelBootstrapSettings;
++import java.util.List;
 +import org.springframework.context.ApplicationContextInitializer;
 +import org.springframework.context.ConfigurableApplicationContext;
 +import org.springframework.core.env.Environment;
++import org.springframework.util.StringUtils;
 +
 +/**
 + * Opt-in activation of Spring Booster's parallel bean instantiation for the BootUI sample app.
@@ -73,9 +75,19 @@ index 0000000..7f1237e
 +        // backgroundFactoryMethodBeans setting is required.
 +        boolean sharedInfra =
 +                Boolean.parseBoolean(environment.getProperty("sample.shared-infra-consumers", "false"));
++        // Fourth benchmark variant: explicitly allow-list specific heavyweight @Bean beans
++        // (e.g. Spring Security's filter chain) so they may background even though the dynamic
++        // auto-configurations keep every other @Bean on the main thread. Each named bean still
++        // has to clear the structural safety checks, so a forced-mainline depends-on target
++        // (such as the Flyway/Liquibase migrators that JPA pins ahead of itself) stays on the
++        // main thread -- the allowlist is a safe, targeted alternative to
++        // backgroundFactoryMethodBeans. Pass a comma-separated list via sample.background-bean-names.
++        List<String> backgroundBeanNames = List.of(
++                StringUtils.commaDelimitedListToStringArray(environment.getProperty("sample.background-bean-names", "")));
 +        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
 +                .threadNamePrefix("sample-boot-")
 +                .backgroundSharedInfraConsumers(sharedInfra)
++                .backgroundBeanNames(backgroundBeanNames)
 +                .build();
 +        applicationContext.addBeanFactoryPostProcessor(new ParallelBootstrapBeanFactoryPostProcessor(settings));
 +    }

@@ -10,10 +10,15 @@
 #                default (factory-method @Bean beans are kept on the main thread,
 #                so the analysis backgrounds the sample app's component beans).
 #   * boosted+shared-infra — parallel bootstrap plus the completed-leaf barrier
-#                relaxation (--sample.shared-infra-consumers=true), which also
-#                enables backgroundFactoryMethodBeans + backgroundSharedInfraConsumers
-#                so the two independent migration engines (Flyway + Liquibase) over
-#                the shared DataSource can run concurrently on background threads.
+#                relaxation (--sample.shared-infra-consumers=true), which lets two
+#                independent migration engines (Flyway + Liquibase) over the shared
+#                DataSource run concurrently on background threads when the shared leaf
+#                qualifies as a forced-mainline barrier.
+#   * boosted+allowlist — parallel bootstrap plus an explicit per-bean allowlist
+#                (--sample.background-bean-names=...), which names specific heavyweight
+#                @Bean beans (Spring Security's filter chain and the migrators) so they
+#                may background even though dynamic auto-configurations keep every other
+#                @Bean on the main thread. Forced-mainline names safely stay sequential.
 #
 # The toggle is a PROPERTY, not a Spring profile, on purpose: the sample app's
 # default profile is "dev" (spring.profiles.default=dev → in-memory H2 + simple
@@ -78,6 +83,15 @@ boosted_times="$(run_variant 'BOOSTED (parallel bootstrap)' --sample.parallel-bo
 # concurrently on background threads.
 sharedinfra_times="$(run_variant 'BOOSTED+SHARED-INFRA (parallel bootstrap + shared-infra leaf)' \
     --sample.parallel-bootstrap=true --sample.shared-infra-consumers=true)"
+# Fourth variant: parallel bootstrap PLUS an explicit per-bean allowlist. It names
+# specific heavyweight @Bean beans (here Spring Security's filter chain and the two
+# migration engines) so they may background even though dynamic auto-configurations keep
+# every other @Bean on the main thread. Names that are forced-mainline (e.g. the
+# Flyway/Liquibase depends-on targets that JPA pins ahead of itself) safely stay on the
+# main thread, so this is a targeted, safe alternative to backgroundFactoryMethodBeans.
+allowlist_times="$(run_variant 'BOOSTED+ALLOWLIST (parallel bootstrap + per-bean allowlist)' \
+    --sample.parallel-bootstrap=true \
+    --sample.background-bean-names=springSecurityFilterChain,flyway,liquibase)"
 
 # shellcheck disable=SC2086
 read -r b_min b_med b_mean b_max <<<"$(stats $baseline_times)"
@@ -85,6 +99,8 @@ read -r b_min b_med b_mean b_max <<<"$(stats $baseline_times)"
 read -r x_min x_med x_mean x_max <<<"$(stats $boosted_times)"
 # shellcheck disable=SC2086
 read -r s_min s_med s_mean s_max <<<"$(stats $sharedinfra_times)"
+# shellcheck disable=SC2086
+read -r a_min a_med a_mean a_max <<<"$(stats $allowlist_times)"
 
 # Improvement on the median (positive = boosted is faster).
 delta="$(awk -v a="$b_med" -v b="$x_med" 'BEGIN { printf "%+.3f", a - b }')"
@@ -92,6 +108,9 @@ pct="$(awk -v a="$b_med" -v b="$x_med" 'BEGIN { if (a > 0) printf "%+.1f", (a - 
 # Improvement of the shared-infra variant on the median (positive = faster than baseline).
 sdelta="$(awk -v a="$b_med" -v b="$s_med" 'BEGIN { printf "%+.3f", a - b }')"
 spct="$(awk -v a="$b_med" -v b="$s_med" 'BEGIN { if (a > 0) printf "%+.1f", (a - b) / a * 100; else printf "n/a" }')"
+# Improvement of the allowlist variant on the median (positive = faster than baseline).
+adelta="$(awk -v a="$b_med" -v b="$a_med" 'BEGIN { printf "%+.3f", a - b }')"
+apct="$(awk -v a="$b_med" -v b="$a_med" 'BEGIN { if (a > 0) printf "%+.1f", (a - b) / a * 100; else printf "n/a" }')"
 
 # shellcheck disable=SC2086
 baseline_list="$(printf '%s ' $baseline_times | sed 's/ $//; s/ /, /g')"
@@ -99,6 +118,8 @@ baseline_list="$(printf '%s ' $baseline_times | sed 's/ $//; s/ /, /g')"
 boosted_list="$(printf '%s ' $boosted_times | sed 's/ $//; s/ /, /g')"
 # shellcheck disable=SC2086
 sharedinfra_list="$(printf '%s ' $sharedinfra_times | sed 's/ $//; s/ /, /g')"
+# shellcheck disable=SC2086
+allowlist_list="$(printf '%s ' $allowlist_times | sed 's/ $//; s/ /, /g')"
 
 echo
 echo "## Startup time: without vs with Spring Booster"
@@ -110,6 +131,8 @@ echo "|---|---|---:|---:|---:|---:|"
 echo "| Baseline (sequential) | $baseline_list | $b_min | $b_med | $b_mean | $b_max |"
 echo "| Boosted (parallel bootstrap) | $boosted_list | $x_min | $x_med | $x_mean | $x_max |"
 echo "| Boosted + shared-infra leaf | $sharedinfra_list | $s_min | $s_med | $s_mean | $s_max |"
+echo "| Boosted + per-bean allowlist | $allowlist_list | $a_min | $a_med | $a_mean | $a_max |"
 echo
 echo "**Median difference (baseline − boosted): ${delta}s (${pct}%).**"
 echo "**Median difference (baseline − boosted+shared-infra): ${sdelta}s (${spct}%).**"
+echo "**Median difference (baseline − boosted+allowlist): ${adelta}s (${apct}%).**"

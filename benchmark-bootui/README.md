@@ -33,13 +33,16 @@ the two distributions did not even overlap (baseline max 9.928 s < boosted min
 reproduce on your own machine; absolute numbers and the size of the delta will
 vary.)
 
-> **New: a third variant** — *boosted + shared-infra leaf* — enables the
-> `backgroundSharedInfraConsumers` relaxation so the two independent migration
-> engines (Flyway + Liquibase) over the shared `DataSource` overlap on background
-> threads instead of running back to back on the main thread. The numbers above
-> predate it; `./run-benchmark.sh` now measures all three variants, and the goal
-> of the new one is to recover the regression above into a net win. See
-> [Backgrounding the shared-infra consumers](#backgrounding-the-shared-infra-consumers).
+> **New: two extra variants** beyond baseline and boosted. *Boosted + shared-infra
+> leaf* enables the `backgroundSharedInfraConsumers` relaxation so two independent
+> migration engines (Flyway + Liquibase) over a shared `DataSource` can overlap when
+> the shared leaf is a forced-mainline barrier. *Boosted + per-bean allowlist* names
+> specific heavyweight `@Bean` beans (e.g. Spring Security's filter chain) so they may
+> background while every other `@Bean` stays on the main thread. The numbers above
+> predate both; `./run-benchmark.sh` now measures all four variants, and the goal of
+> the extra ones is to recover the regression above into a net win. See
+> [Backgrounding the shared-infra consumers](#backgrounding-the-shared-infra-consumers)
+> and [Backgrounding specific beans with an allowlist](#backgrounding-specific-beans-with-an-allowlist).
 ## Layout
 
 | File | Purpose |
@@ -47,7 +50,7 @@ vary.)
 | `setup.sh` | Installs `spring-booster` to `~/.m2`, clones BootUI at a pinned commit, applies the patch, builds the `bootui-sample-app` jar (sample module only; BootUI deps come from Maven Central). |
 | `bootui-spring-booster.patch` | The exact Spring Booster integration changes applied to the sample app. |
 | `measure.sh` | Runs a jar N times and prints each reported "Started … in X seconds" value. |
-| `run-benchmark.sh` | Runs the three variants — baseline, boosted, and boosted + shared-infra leaf (plus a warm-up each) — and prints the comparison table. |
+| `run-benchmark.sh` | Runs the four variants — baseline, boosted, boosted + shared-infra leaf, and boosted + per-bean allowlist (plus a warm-up each) — and prints the comparison table. |
 | `boot-ui/` | The cloned + patched BootUI checkout (git-ignored; created by `setup.sh`). |
 
 ## How to run
@@ -75,6 +78,11 @@ comparison is apples-to-apples (identical classpath, profile, and artifact).
   independent schema migration engines (Flyway + Liquibase) that share one
   `DataSource` can run concurrently on background threads instead of being
   serialized onto the main thread (see [Backgrounding the shared-infra consumers](#backgrounding-the-shared-infra-consumers)).
+* **Boosted + per-bean allowlist** — run with `--sample.parallel-bootstrap=true
+  --sample.background-bean-names=springSecurityFilterChain,flyway,liquibase`. This
+  names specific heavyweight `@Bean` beans the user asserts are safe to background, so
+  they may run on background threads even though the dynamic auto-configurations keep
+  every *other* `@Bean` bean on the main thread (see [Backgrounding specific beans with an allowlist](#backgrounding-specific-beans-with-an-allowlist)).
 
 Startup time is taken from Spring Boot's own
 `Started BootUiSampleApplication in X seconds` log line. Each variant runs one
@@ -164,4 +172,32 @@ barrier predicate, Flyway and Liquibase therefore stay on the main thread and ar
 boosted run rather than recovering the regression. This is the honest, "sequential
 when in doubt" outcome; the relaxation only materialises overlap when the shared leaf
 is a genuine forced-mainline barrier (e.g. a `depends-on` target). Run
-`./run-benchmark.sh` to reproduce all three variants on your own machine.
+`./run-benchmark.sh` to reproduce all four variants on your own machine.
+
+## Backgrounding specific beans with an allowlist
+
+The shared-infra relaxation above is deliberately narrow and, on this sample, does not
+fire. A more direct way to recover the regression is to **name** the specific heavyweight
+`@Bean` beans you have verified are safe to background, instead of flipping the
+context-wide `backgroundFactoryMethodBeans` flag (which would re-expose *every* `@Bean`
+bean to the invisible by-type lookup risk). The library's per-bean allowlist
+(`backgroundBeanNames` / `FORCE_BACKGROUND_ATTRIBUTE`, main project `SPECIFICATION.md`
+§5.2.4) drops **only** the named beans' configuration→`@Bean` co-location edge.
+
+The **boosted + per-bean allowlist** variant passes
+`--sample.background-bean-names=springSecurityFilterChain,flyway,liquibase`. The cleanest
+candidate is **Spring Security's filter chain**: it carries no `depends-on` to the
+JPA/migration stack, so once its co-location edge is dropped it can overlap the Hibernate
+metamodel build and the migrations on a background thread.
+
+The honest caveat mirrors the shared-infra section: `flyway` and `liquibase` are
+**forced-mainline** here because Spring Boot's JPA auto-configuration declares a
+`depends-on` from the `EntityManagerFactory` to each migrator (so the schema is migrated
+before Hibernate starts). Naming them is therefore a safe no-op — the allowlist only ever
+*removes* a co-location edge and never overrides the structural `depends-on` safety rule,
+so they stay on the main thread and the boot stays correct. The realistic win is the
+overlap of Spring Security with the database stack, not moving the migrators. As always
+the variant is opt-in and preserves the fail-fast → sequential fallback, so a clean boot
+(no `BeanCurrentlyInCreationException`) is the correctness check. Absolute numbers vary by
+machine; run `./run-benchmark.sh` to measure all four variants yourself.
+

@@ -141,6 +141,39 @@ This reintroduces the risk that a main-thread bean pulls a backgrounded `@Bean` 
 by type through a call the analysis cannot see, so pair it with a `candidateFilter`
 scoped to beans you know are safe.
 
+### Backgrounding specific `@Bean` beans (allowlist)
+
+If you want to background only a **few specific** heavyweight `@Bean` beans — for
+example a `springSecurityFilterChain` you know is independent of the database stack —
+without exposing every other `@Bean` bean to the invisible by-type lookup risk, name
+them explicitly instead of flipping `backgroundFactoryMethodBeans` for the whole
+context:
+
+```java
+@EnableParallelBootstrap(backgroundBeanNames = {"springSecurityFilterChain"})
+// or
+ParallelBootstrapSettings.builder()
+        .backgroundBeanNames("springSecurityFilterChain")
+        .build();
+```
+
+You can also opt a single bean definition in via an attribute (the inverse of the
+opt-out attribute):
+
+```java
+beanDefinition.setAttribute(ParallelBootstrapSettings.FORCE_BACKGROUND_ATTRIBUTE, Boolean.TRUE);
+```
+
+Naming a bean drops **only** its `@Configuration`→`@Bean` co-location edge; the bean
+must still clear every other safety check — it is not backgrounded if it is in a
+cycle, is a forced-mainline `depends-on`/factory target (such as a Flyway/Liquibase
+migrator that the JPA `EntityManagerFactory` declares a `depends-on` against), is
+opted out, or is connected by a genuine, visible sync edge to a main-thread bean. To
+background a whole independent subtree, allowlist its members together. An invisible
+eager by-type pull still fails fast with `BeanCurrentlyInCreationException` and falls
+back to the sequential bootstrap, so the allowlist stays faithful to the
+"sequential when in doubt" design goal.
+
 ### Deferring `ObjectProvider` / `@Lazy` edges
 
 `ObjectProvider`/`ObjectFactory`/`Provider`/`@Lazy` are Spring's escape hatch for

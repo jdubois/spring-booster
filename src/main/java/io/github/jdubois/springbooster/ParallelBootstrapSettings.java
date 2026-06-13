@@ -16,6 +16,11 @@
 
 package io.github.jdubois.springbooster;
 
+import java.util.Collection;
+import java.util.Collections;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.function.Predicate;
 import org.jspecify.annotations.Nullable;
 import org.springframework.beans.factory.config.BeanDefinition;
@@ -42,6 +47,16 @@ public final class ParallelBootstrapSettings {
      */
     public static final String OPT_OUT_ATTRIBUTE = ParallelBootstrapSettings.class.getName() + ".optOut";
 
+    /**
+     * Bean definition attribute that, when set to {@code Boolean.TRUE}, explicitly
+     * opts a bean <em>into</em> background initialization even when it is a
+     * {@code @Bean} factory-method bean that the safe default would otherwise co-locate
+     * with its configuration class (see {@link #getBackgroundBeanNames()}). This is the
+     * per-definition counterpart of {@link #getBackgroundBeanNames()}.
+     */
+    public static final String FORCE_BACKGROUND_ATTRIBUTE =
+            ParallelBootstrapSettings.class.getName() + ".forceBackground";
+
     private final boolean enabled;
 
     private final int poolSize;
@@ -49,6 +64,8 @@ public final class ParallelBootstrapSettings {
     private final String threadNamePrefix;
 
     private final Predicate<String> candidateFilter;
+
+    private final Set<String> backgroundBeanNames;
 
     private final boolean backgroundFactoryMethodBeans;
 
@@ -61,6 +78,7 @@ public final class ParallelBootstrapSettings {
             int poolSize,
             String threadNamePrefix,
             Predicate<String> candidateFilter,
+            Set<String> backgroundBeanNames,
             boolean backgroundFactoryMethodBeans,
             boolean deferProviderEdges,
             boolean backgroundSharedInfraConsumers) {
@@ -69,6 +87,7 @@ public final class ParallelBootstrapSettings {
         this.poolSize = poolSize;
         this.threadNamePrefix = threadNamePrefix;
         this.candidateFilter = candidateFilter;
+        this.backgroundBeanNames = backgroundBeanNames;
         this.backgroundFactoryMethodBeans = backgroundFactoryMethodBeans;
         this.deferProviderEdges = deferProviderEdges;
         this.backgroundSharedInfraConsumers = backgroundSharedInfraConsumers;
@@ -106,6 +125,28 @@ public final class ParallelBootstrapSettings {
      */
     public Predicate<String> getCandidateFilter() {
         return this.candidateFilter;
+    }
+
+    /**
+     * The set of {@code @Bean} factory-method bean names the user has explicitly asserted
+     * are safe to background, even when a <em>dynamic</em> configuration is present and the
+     * safe default would otherwise co-locate every {@code @Bean} bean with its
+     * configuration class (see {@link #isBackgroundFactoryMethodBeans()}).
+     * <p>Defaults to the empty set. Naming a bean here drops only its
+     * configuration&rarr;{@code @Bean} <em>co-location</em> edge; the bean still has to pass
+     * every other safety check &mdash; it must not be in a cycle, must not be a
+     * forced-mainline {@code depends-on}/factory target, must not be opted out, and is still
+     * subject to the connectivity-safe sync-edge propagation. A bean named here that is
+     * pulled mainline by a genuine (visible) sync edge therefore stays on the main thread, and
+     * an invisible eager by-type pull still fails fast with
+     * {@code BeanCurrentlyInCreationException} and falls back to sequential bootstrap. This is
+     * the targeted, per-bean alternative to the context-wide
+     * {@link #isBackgroundFactoryMethodBeans()} flag.
+     * @return the explicit background allowlist of {@code @Bean} bean names
+     * @see #FORCE_BACKGROUND_ATTRIBUTE
+     */
+    public Set<String> getBackgroundBeanNames() {
+        return this.backgroundBeanNames;
     }
 
     /**
@@ -233,6 +274,14 @@ public final class ParallelBootstrapSettings {
     }
 
     /**
+     * Determine whether the given bean definition has explicitly opted <em>into</em>
+     * background initialization via {@link #FORCE_BACKGROUND_ATTRIBUTE}.
+     */
+    static boolean isForcedBackground(@Nullable BeanDefinition beanDefinition) {
+        return (beanDefinition != null && Boolean.TRUE.equals(beanDefinition.getAttribute(FORCE_BACKGROUND_ATTRIBUTE)));
+    }
+
+    /**
      * Builder for {@link ParallelBootstrapSettings}.
      */
     public static final class Builder {
@@ -244,6 +293,8 @@ public final class ParallelBootstrapSettings {
         private String threadNamePrefix = "parallel-bootstrap-";
 
         private Predicate<String> candidateFilter = beanName -> true;
+
+        private Set<String> backgroundBeanNames = Collections.emptySet();
 
         private boolean backgroundFactoryMethodBeans = false;
 
@@ -297,6 +348,37 @@ public final class ParallelBootstrapSettings {
             Assert.notNull(candidateFilter, "'candidateFilter' must not be null");
             this.candidateFilter = candidateFilter;
             return this;
+        }
+
+        /**
+         * Set the explicit allowlist of {@code @Bean} factory-method bean names that may be
+         * backgrounded even when a dynamic configuration is present (which normally co-locates
+         * every {@code @Bean} bean with its configuration class). The names are copied
+         * defensively; passing {@code null} or an empty collection clears the allowlist. This
+         * is the targeted, per-bean alternative to the context-wide
+         * {@link #backgroundFactoryMethodBeans(boolean)} flag: only the named beans lose their
+         * co-location edge, while every other {@code @Bean} bean stays on the main thread.
+         * @param backgroundBeanNames the {@code @Bean} bean names to allow into the background
+         * @return this builder
+         * @see ParallelBootstrapSettings#getBackgroundBeanNames()
+         */
+        public Builder backgroundBeanNames(@Nullable Collection<String> backgroundBeanNames) {
+            this.backgroundBeanNames = (backgroundBeanNames == null || backgroundBeanNames.isEmpty())
+                    ? Collections.emptySet()
+                    : Collections.unmodifiableSet(new LinkedHashSet<>(backgroundBeanNames));
+            return this;
+        }
+
+        /**
+         * Set the explicit allowlist of {@code @Bean} factory-method bean names that may be
+         * backgrounded, as a varargs convenience over
+         * {@link #backgroundBeanNames(Collection)}.
+         * @param backgroundBeanNames the {@code @Bean} bean names to allow into the background
+         * @return this builder
+         * @see ParallelBootstrapSettings#getBackgroundBeanNames()
+         */
+        public Builder backgroundBeanNames(String... backgroundBeanNames) {
+            return backgroundBeanNames(List.of(backgroundBeanNames));
         }
 
         /**
@@ -357,6 +439,7 @@ public final class ParallelBootstrapSettings {
                     this.poolSize,
                     this.threadNamePrefix,
                     this.candidateFilter,
+                    this.backgroundBeanNames,
                     this.backgroundFactoryMethodBeans,
                     this.deferProviderEdges,
                     this.backgroundSharedInfraConsumers);

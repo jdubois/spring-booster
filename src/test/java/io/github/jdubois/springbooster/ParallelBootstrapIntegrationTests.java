@@ -126,6 +126,24 @@ class ParallelBootstrapIntegrationTests {
     }
 
     @Test
+    void allowlistedFactoryMethodBeansAreBackgroundedDespiteDynamicConfiguration() {
+        DynamicRecordingConfig.creationThreads.clear();
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            // A dynamic configuration would normally keep all of its @Bean beans on the main
+            // thread. Allow-listing specific @Bean names drops only their co-location edge, so
+            // those beans may be backgrounded while the configuration stays on the main thread.
+            ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                    .backgroundBeanNames("one", "two", "three", "four")
+                    .build();
+            new ParallelBootstrapApplicationContextInitializer(settings).initialize(context);
+            context.register(DynamicRecordingConfig.class);
+            context.refresh();
+            assertThat(context.getBeansOfType(RecordingBean.class)).hasSize(4);
+            assertThat(DynamicRecordingConfig.creationThreads).anyMatch(name -> name.startsWith("parallel-bootstrap-"));
+        }
+    }
+
+    @Test
     void dynamicFactoryMethodBeansAreKeptMainlineByDefault() {
         DynamicRecordingConfig.creationThreads.clear();
         try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {

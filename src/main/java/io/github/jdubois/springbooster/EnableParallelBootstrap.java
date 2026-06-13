@@ -83,6 +83,22 @@ public @interface EnableParallelBootstrap {
     String threadNamePrefix() default "parallel-bootstrap-";
 
     /**
+     * An explicit allowlist of {@code @Bean} factory-method bean names that may be
+     * backgrounded even when a dynamic configuration is present (which normally co-locates
+     * every {@code @Bean} bean with its configuration class). Defaults to an empty array.
+     * <p>This is the targeted, per-bean alternative to {@link #backgroundFactoryMethodBeans()}:
+     * only the named beans lose their co-location edge, while every other {@code @Bean} bean
+     * stays on the main thread. Each named bean must still clear the remaining safety checks
+     * and the connectivity-safe propagation, so a genuinely entangled bean is kept on the main
+     * thread and the {@code BeanCurrentlyInCreationException} fast-fail remains the backstop.
+     * Useful for backgrounding a known-independent heavyweight bean such as
+     * {@code springSecurityFilterChain}.
+     * @return the explicit background allowlist of {@code @Bean} bean names
+     * @see ParallelBootstrapSettings#getBackgroundBeanNames()
+     */
+    String[] backgroundBeanNames() default {};
+
+    /**
      * Whether beans produced by {@code @Bean} factory methods are eligible for
      * background initialization. Defaults to {@code false}, which co-locates every
      * factory-method bean with its (always main-thread) configuration class so that

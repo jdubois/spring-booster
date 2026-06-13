@@ -101,10 +101,10 @@ All code lives in a single package: `io.github.jdubois.springbooster`.
 
 | Class | Responsibility |
 |---|---|
-| `EnableParallelBootstrap` | Public opt-in annotation. `@Import`s the registrar. Carries tuning attributes (`enabled`, `poolSize`, `threadNamePrefix`, `backgroundFactoryMethodBeans`, `deferProviderEdges`, `backgroundSharedInfraConsumers`). |
+| `EnableParallelBootstrap` | Public opt-in annotation. `@Import`s the registrar. Carries tuning attributes (`enabled`, `poolSize`, `threadNamePrefix`, `backgroundBeanNames`, `backgroundFactoryMethodBeans`, `deferProviderEdges`, `backgroundSharedInfraConsumers`). |
 | `ParallelBootstrapRegistrar` | `ImportBeanDefinitionRegistrar` activated by the annotation. Translates annotation attributes into `ParallelBootstrapSettings` and registers the post-processor as an infrastructure bean (idempotently). |
 | `ParallelBootstrapApplicationContextInitializer` | `ApplicationContextInitializer` entry point for programmatic / Spring Boot (`spring.factories`) registration, with no need for the annotation. |
-| `ParallelBootstrapSettings` | Immutable configuration (pool size, thread-name prefix, kill-switch, candidate `Predicate`, `backgroundFactoryMethodBeans`, `deferProviderEdges` and `backgroundSharedInfraConsumers` toggles). Built via a fluent `Builder`. Defines the per-bean opt-out attribute. |
+| `ParallelBootstrapSettings` | Immutable configuration (pool size, thread-name prefix, kill-switch, candidate `Predicate`, `backgroundBeanNames` allowlist, `backgroundFactoryMethodBeans`, `deferProviderEdges` and `backgroundSharedInfraConsumers` toggles). Built via a fluent `Builder`. Defines the per-bean opt-out and force-background attributes. |
 | `BeanDependencyGraph` | Pure in-memory dependency graph of the bean definitions. Models both declared references **and** by-type autowiring edges (via `AutowiredEdgeResolver`), classifying each edge as *forced* or *sync* (and optionally *deferred*). Provides topological layering (Kahn) and cycle detection (Tarjan). Never triggers bean creation. |
 | `DynamicConfigurationDetector` | Statically classifies each `@Configuration`/factory bean as *dynamic* (capable of invisible by-type lookups — full `@Configuration`, `Aware`/`*Configurer`/`*Customizer`, or captured context / provider / `@Lazy` members) or *pure*. If any configuration in the context is dynamic, co-location edges (§5.2.1) are added for **every** factory-method bean; if none is, they are dropped entirely. |
 | `AutowiredEdgeResolver` | Reflectively resolves the by-type / `@Autowired` / `ObjectProvider` dependency edges that the declarations do not reveal (`@Bean` method params, autowired constructors, `@Autowired` fields/methods), unwrapping `ObjectProvider`/`ObjectFactory`/`Provider`/`Optional`/collections/maps/arrays. Resolves candidate names with eager init disabled, so it never instantiates a bean. |
@@ -406,6 +406,38 @@ barrier — letting those independent consumers overlap on background threads wh
 other `@Bean` stays main-thread. The flag is therefore self-contained and does **not**
 require `backgroundFactoryMethodBeans`.
 
+#### 5.2.4 Per-bean background allowlist (`backgroundBeanNames` / `FORCE_BACKGROUND_ATTRIBUTE`)
+
+The context-wide `backgroundFactoryMethodBeans` flag (§5.2.1) is all-or-nothing: it
+drops co-location for *every* `@Bean` bean, re-opening the invisible by-type lookup
+channel for the whole context. When only a **few specific** heavyweight `@Bean` beans are
+known to be safe to background — the canonical example is a `springSecurityFilterChain`
+that does not touch the database and carries no `depends-on` to the JPA/migration stack —
+that is too coarse.
+
+The opt-in **allowlist** carves out exactly those beans. A bean is allow-listed either by
+name through `ParallelBootstrapSettings.backgroundBeanNames(...)` /
+`@EnableParallelBootstrap(backgroundBeanNames = {...})`, or per-definition by setting the
+`ParallelBootstrapSettings.FORCE_BACKGROUND_ATTRIBUTE` attribute to `Boolean.TRUE` (the
+inverse of `OPT_OUT_ATTRIBUTE`). For each allow-listed bean the planner drops *only* its
+configuration→`@Bean` **co-location** sync edge (`applyBackgroundAllowlist`, run right
+after the graph is built), leaving every other `@Bean` bean co-located so the
+invisible-lookup channel stays closed for the rest of the context.
+
+The relaxation only ever *removes* a co-location edge; it never bypasses the rest of the
+pipeline. An allow-listed bean must still pass `isSafeCandidate` (not in a cycle, not a
+forced-mainline `depends-on`/factory target, not opted out, an `AbstractBeanDefinition`,
+not an infrastructure type, accepted by the `candidateFilter`) **and** survive the
+connectivity-safe `propagateMainline` pass. So a bean joined to the main thread by a
+genuine visible sync edge — or a Flyway/Liquibase migrator that JPA pins with a
+`depends-on` (forced-mainline) — stays on the main thread even when named, and an invisible
+eager by-type pull still fails fast with `BeanCurrentlyInCreationException` and falls back
+to sequential bootstrap (design goal #1). To background an independent *subtree*, all of
+its members are allow-listed together. This makes the allowlist the targeted, per-bean
+counterpart of `backgroundFactoryMethodBeans` for the realistic win identified in the
+BootUI benchmark: overlapping a known-independent heavyweight `@Bean` (such as Spring
+Security) with the JPA/migration stack.
+
 ### 5.3 Consequences
 
 * All **declaration-level** relationships are now modelled and made safe: explicit
@@ -420,7 +452,9 @@ require `backgroundFactoryMethodBeans`.
   `@Bean` beans — and the subtrees below them — background by default too. Applications
   also benefit from backgrounding their component-scanned beans, and may enable
   `backgroundFactoryMethodBeans`, `deferProviderEdges`, and/or
-  `backgroundSharedInfraConsumers` for more parallelism where they know it is safe.
+  `backgroundSharedInfraConsumers` for more parallelism where they know it is safe, or
+  name specific `@Bean` beans through `backgroundBeanNames` / `FORCE_BACKGROUND_ATTRIBUTE`
+  (§5.2.4) to background just those.
 * **Narrow residual blind spot.** A bean that is *not* a factory-method bean (a
   component or plain definition) could still be pulled by type through a **direct
   `getBean(...)` from inside another bean's initialization code**. This is rare and
