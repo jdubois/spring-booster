@@ -225,15 +225,17 @@ public @interface EnableParallelBootstrap {
     /**
      * Whether the bootstrap executor should run each backgrounded bean on a virtual
      * thread instead of on the bounded platform-thread pool. Defaults to
-     * {@code false}. When {@code true}, an unbounded virtual-thread-per-task executor
-     * is installed and {@link #poolSize()} is ignored.
+     * {@code true}. When {@code true}, an unbounded virtual-thread-per-task executor
+     * is installed and {@link #poolSize()} is ignored. Set to {@code false} to install
+     * the bounded {@link #poolSize() pool-sized} platform-thread executor instead.
      * <p>Virtual threads suit the frequently blocking-bound nature of bean bootstrap:
      * every independent blocking bean can make progress without the {@link #poolSize()}
      * ceiling. On the Java 25 baseline, blocking inside the singleton-creation lock no
      * longer pins a carrier (JEP&nbsp;491), so the blocking-bound work parallelizes
-     * cleanly. Purely CPU-bound bootstrap workloads should keep the bounded pool.
+     * cleanly. Purely CPU-bound bootstrap workloads should set this to {@code false} to
+     * use the bounded pool.
      * @return whether to use a virtual-thread-per-task bootstrap executor
      * @see ParallelBootstrapSettings#isUseVirtualThreads()
      */
-    boolean useVirtualThreads() default false;
+    boolean useVirtualThreads() default true;
 }

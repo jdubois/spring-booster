@@ -627,17 +627,18 @@ than producing wrong results (design goal #1).
   the alias, and Spring resolves the bootstrap executor to the dedicated pool instead of Boot's
   shared task pool. A genuine, explicitly defined `bootstrapExecutor` bean is left untouched and
   still wins.
-* The bootstrap executor is, by default, a `ThreadPoolExecutor` with a **fixed,
-  bounded** size (`max(2, availableProcessors() * 2)`) and **daemon** threads named
-  with the configured prefix (default `parallel-bootstrap-`).
-* When `useVirtualThreads` is enabled (`@EnableParallelBootstrap(useVirtualThreads = true)`
-  or `ParallelBootstrapSettings.builder().useVirtualThreads(true)`), the executor is
-  instead an **unbounded virtual-thread-per-task** executor whose threads are named
-  with the same prefix; `poolSize` is ignored. This targets the frequently
+* The bootstrap executor is, by default, an **unbounded virtual-thread-per-task**
+  executor whose virtual threads are named with the configured prefix (default
+  `parallel-bootstrap-`); `poolSize` is ignored. This targets the frequently
   blocking-bound nature of bean bootstrap and relies on the Java 25 baseline, where
   blocking inside Spring's singleton-creation lock no longer pins a carrier (JDK 24,
   JEP 491). The startup speedup ceiling remains the bean dependency graph's critical
-  path; CPU-bound workloads should keep the bounded pool.
+  path.
+* When `useVirtualThreads` is disabled (`@EnableParallelBootstrap(useVirtualThreads = false)`
+  or `ParallelBootstrapSettings.builder().useVirtualThreads(false)`), the executor is
+  instead a `ThreadPoolExecutor` with a **fixed, bounded** size
+  (`max(2, availableProcessors() * 2)`) and **daemon** threads named with the same
+  prefix. CPU-bound workloads should prefer this bounded pool.
 * A `ContextRefreshedEvent` listener (registered as a manual singleton so the event
   multicaster detects it) clears the factory's bootstrap executor and shuts it
   down **immediately after refresh**, so threads do not outlive bootstrap.

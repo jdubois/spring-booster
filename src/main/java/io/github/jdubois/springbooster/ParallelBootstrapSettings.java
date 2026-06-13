@@ -377,9 +377,9 @@ public final class ParallelBootstrapSettings {
     /**
      * Whether the bootstrap executor should run each backgrounded bean on a
      * <em>virtual thread</em> instead of on the bounded platform-thread pool.
-     * <p>Defaults to {@code false}, which installs the bounded
-     * {@link #getPoolSize() pool-sized} executor. Set to {@code true} to install an
-     * unbounded virtual-thread-per-task executor instead.
+     * <p>Defaults to {@code true}, which installs an unbounded
+     * virtual-thread-per-task executor. Set to {@code false} to install the bounded
+     * {@link #getPoolSize() pool-sized} platform-thread executor instead.
      * <p>Bean bootstrap is frequently blocking-bound (opening connection pools,
      * warming caches, establishing remote clients). Virtual threads let every
      * independent blocking bean make progress concurrently without the
@@ -389,8 +389,9 @@ public final class ParallelBootstrapSettings {
      * that blocks inside the singleton-creation lock no longer pins its carrier, so
      * the blocking-bound part of bootstrap gets the full benefit.
      * <p>When {@code true}, {@link #getPoolSize() poolSize} is ignored (the executor
-     * is unbounded). Purely CPU-bound bootstrap workloads should keep the default
-     * bounded pool, whose size tracks the available processor count.
+     * is unbounded). Purely CPU-bound bootstrap workloads should set this to
+     * {@code false} to use the bounded platform-thread pool, whose size tracks the
+     * available processor count.
      * @return whether to use a virtual-thread-per-task bootstrap executor
      */
     public boolean isUseVirtualThreads() {
@@ -491,7 +492,7 @@ public final class ParallelBootstrapSettings {
 
         private boolean generatedPlanRequired = false;
 
-        private boolean useVirtualThreads = false;
+        private boolean useVirtualThreads = true;
 
         private Builder() {}
 
@@ -758,8 +759,10 @@ public final class ParallelBootstrapSettings {
         /**
          * Set whether the bootstrap executor should run each backgrounded bean on a
          * virtual thread instead of on the bounded platform-thread pool. Defaults to
-         * {@code false}. When {@code true}, an unbounded virtual-thread-per-task
-         * executor is installed and {@link #poolSize(int) poolSize} is ignored.
+         * {@code true}. When {@code true}, an unbounded virtual-thread-per-task
+         * executor is installed and {@link #poolSize(int) poolSize} is ignored. Set to
+         * {@code false} to install the bounded {@link #poolSize(int) pool-sized}
+         * platform-thread executor instead.
          * @param useVirtualThreads whether to use a virtual-thread-per-task executor
          * @return this builder
          * @see ParallelBootstrapSettings#isUseVirtualThreads()

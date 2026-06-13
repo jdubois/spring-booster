@@ -559,6 +559,38 @@ class ParallelBootstrapBeanFactoryPostProcessorTests {
         assertThat(wasVirtual.get(5, TimeUnit.SECONDS)).isTrue();
     }
 
+    @Test
+    void virtualThreadsAreTheDefaultExecutor() throws Exception {
+        registerSingleton("a");
+        // No explicit useVirtualThreads(...) call: the default must install a
+        // virtual-thread-per-task executor.
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder().build();
+        assertThat(settings.isUseVirtualThreads()).isTrue();
+
+        new ParallelBootstrapBeanFactoryPostProcessor(settings).postProcessBeanFactory(this.beanFactory);
+
+        Executor executor = this.beanFactory.getBootstrapExecutor();
+        assertThat(executor).isNotNull();
+        CompletableFuture<Boolean> wasVirtual =
+                CompletableFuture.supplyAsync(() -> Thread.currentThread().isVirtual(), executor);
+        assertThat(wasVirtual.get(5, TimeUnit.SECONDS)).isTrue();
+    }
+
+    @Test
+    void useVirtualThreadsFalseInstallsPlatformThreadExecutor() throws Exception {
+        registerSingleton("a");
+        ParallelBootstrapSettings settings =
+                ParallelBootstrapSettings.builder().useVirtualThreads(false).build();
+
+        new ParallelBootstrapBeanFactoryPostProcessor(settings).postProcessBeanFactory(this.beanFactory);
+
+        Executor executor = this.beanFactory.getBootstrapExecutor();
+        assertThat(executor).isNotNull();
+        CompletableFuture<Boolean> wasVirtual =
+                CompletableFuture.supplyAsync(() -> Thread.currentThread().isVirtual(), executor);
+        assertThat(wasVirtual.get(5, TimeUnit.SECONDS)).isFalse();
+    }
+
     private void registerSingleton(String beanName) {
         this.beanFactory.registerBeanDefinition(beanName, new RootBeanDefinition(Object.class));
     }

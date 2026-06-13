@@ -57,9 +57,12 @@ if anything goes wrong.
   `@Bean` of *any* configuration. If a context has no dynamic configuration at all, its
   `@Bean` beans background. Opt in with `backgroundFactoryMethodBeans(true)` to parallelize
   `@Bean` beans even when dynamic configurations are present.
-* Marks those beans for background initialization and installs a **bounded
-  bootstrap thread pool** (sized by default at twice the available processor
-  count) that the bean factory uses during `preInstantiateSingletons()`.
+* Marks those beans for background initialization and installs a bootstrap
+  executor that the bean factory uses during `preInstantiateSingletons()`. By
+  default this is an **unbounded virtual-thread-per-task executor** (one virtual
+  thread per backgrounded bean); set `useVirtualThreads(false)` to use a **bounded
+  platform-thread pool** instead (sized by default at twice the available processor
+  count).
 * Can **precompute the conservative bootstrap plan at build time** during Spring AOT
   processing, package it as a generated resource, and reuse it at runtime instead of
   recomputing the bean graph on startup.
@@ -347,28 +350,36 @@ ParallelBootstrapSettings.builder().bytecodeLookupDetection(true).build();
 > off the startup critical path. It changes which configurations are classified as
 > dynamic, but never relaxes the context-wide co-location rule when a genuine
 > dynamic lookup remains.
-### Using virtual threads for the bootstrap executor
+### Virtual threads for the bootstrap executor (default)
 
-By default the bootstrap executor is a **bounded platform-thread pool** sized at
-twice the available processor count. Bean bootstrap is, however, frequently
-*blocking-bound* — opening connection pools, warming caches, establishing remote
-clients — and that is exactly the workload virtual threads are built for. Opt in to
-run **one virtual thread per backgrounded bean** instead of the bounded pool:
+By default the bootstrap executor runs **one virtual thread per backgrounded bean**.
+Bean bootstrap is frequently *blocking-bound* — opening connection pools, warming
+caches, establishing remote clients — and that is exactly the workload virtual
+threads are built for, so they are the default executor. No configuration is needed
+to get them:
 
 ```java
-@EnableParallelBootstrap(useVirtualThreads = true)
+@EnableParallelBootstrap
 // or
-ParallelBootstrapSettings.builder().useVirtualThreads(true).build();
+ParallelBootstrapSettings.builder().build();
 ```
 
-When enabled, an unbounded virtual-thread-per-task executor is installed and the
+With the default, an unbounded virtual-thread-per-task executor is installed and the
 `poolSize` setting is ignored, so every independent blocking bean can make progress
 concurrently without the pool-size ceiling and without oversubscribing the platform
 carriers. This relies on the **Java 25 baseline**: since the fix for pinning on
 `synchronized` (JDK 24, [JEP 491](https://openjdk.org/jeps/491)), a virtual thread
 that blocks inside Spring's singleton-creation lock no longer pins its carrier, so
-the blocking-bound part of bootstrap parallelizes cleanly. Purely CPU-bound bootstrap
-workloads should keep the default bounded pool, whose size tracks the processor count.
+the blocking-bound part of bootstrap parallelizes cleanly.
+
+Purely CPU-bound bootstrap workloads can opt out and use a **bounded platform-thread
+pool** (sized at twice the available processor count by default) instead:
+
+```java
+@EnableParallelBootstrap(useVirtualThreads = false)
+// or
+ParallelBootstrapSettings.builder().useVirtualThreads(false).build();
+```
 
 Note that the real ceiling on startup speedup is the **critical path through the bean
 dependency graph**: no threading model can beat the longest chain of dependent beans.
