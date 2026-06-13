@@ -142,6 +142,72 @@ class ParallelBootstrapIntegrationTests {
         }
     }
 
+    @Test
+    void startupProfilerInstrumentsBeansAndRecordsBackgroundThreads() {
+        try (AnnotationConfigApplicationContext context =
+                new AnnotationConfigApplicationContext(ProfiledConfig.class)) {
+            BeanStartupProfiler profiler = context.getBean(BeanStartupProfiler.class);
+            assertThat(profiler.getRecords()).isNotEmpty();
+            // The four @Bean beans are backgrounded here, so at least one was created on a
+            // bootstrap thread and recorded as such.
+            assertThat(profiler.getRecord("one")).isNotNull();
+            assertThat(profiler.backgroundBeanCount()).isPositive();
+            assertThat(profiler.report()).contains("instrumented");
+        }
+    }
+
+    @Test
+    void startupProfilerWorksAsSequentialBaselineWithKillSwitch() {
+        try (AnnotationConfigApplicationContext context =
+                new AnnotationConfigApplicationContext(ProfiledDisabledConfig.class)) {
+            BeanStartupProfiler profiler = context.getBean(BeanStartupProfiler.class);
+            assertThat(profiler.getRecords()).isNotEmpty();
+            // Parallel bootstrap is disabled, so nothing was created on a bootstrap thread.
+            assertThat(profiler.backgroundBeanCount()).isZero();
+            assertThat(context.getBeanFactory().getBootstrapExecutor()).isNull();
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableParallelBootstrap(poolSize = 4, backgroundFactoryMethodBeans = true, profileStartup = true)
+    static class ProfiledConfig {
+
+        @Bean
+        RecordingBean one() {
+            return new RecordingBean(RecordingConfig.creationThreads);
+        }
+
+        @Bean
+        RecordingBean two() {
+            return new RecordingBean(RecordingConfig.creationThreads);
+        }
+
+        @Bean
+        RecordingBean three() {
+            return new RecordingBean(RecordingConfig.creationThreads);
+        }
+
+        @Bean
+        RecordingBean four() {
+            return new RecordingBean(RecordingConfig.creationThreads);
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableParallelBootstrap(enabled = false, profileStartup = true)
+    static class ProfiledDisabledConfig {
+
+        @Bean
+        ServiceA serviceA() {
+            return new ServiceA();
+        }
+
+        @Bean
+        ServiceB serviceB() {
+            return new ServiceB();
+        }
+    }
+
     @Configuration(proxyBeanMethods = false)
     @EnableParallelBootstrap
     static class EnabledConfig {

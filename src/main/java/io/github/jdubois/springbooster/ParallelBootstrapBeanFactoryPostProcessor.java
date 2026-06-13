@@ -126,6 +126,11 @@ public class ParallelBootstrapBeanFactoryPostProcessor
     }
 
     private void apply(ConfigurableListableBeanFactory beanFactory) {
+        // Startup profiling is independent of the parallel-bootstrap kill-switch so that a
+        // sequential baseline can be measured for comparison.
+        if (this.settings.isProfileStartup()) {
+            installProfiler(beanFactory);
+        }
         if (!this.settings.isEnabled()) {
             logger.debug("Parallel bootstrap disabled; using sequential singleton instantiation");
             return;
@@ -320,6 +325,36 @@ public class ParallelBootstrapBeanFactoryPostProcessor
         ThreadFactory threadFactory = new BootstrapThreadFactory(this.settings.getThreadNamePrefix());
         return new ThreadPoolExecutor(
                 poolSize, poolSize, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(), threadFactory);
+    }
+
+    /**
+     * Install the opt-in {@link BeanStartupProfiler} as a bean post-processor and arrange
+     * for a summary report to be logged once the context has refreshed. Installation is
+     * idempotent and degrades gracefully: any failure here is logged and ignored so that
+     * profiling can never break the context.
+     */
+    private void installProfiler(ConfigurableListableBeanFactory beanFactory) {
+        String profilerName = getClass().getName() + ".profiler";
+        if (beanFactory.containsSingleton(profilerName)) {
+            // Already installed (apply may run via both the BeanFactoryPostProcessor and
+            // BeanFactoryInitializer entry points).
+            return;
+        }
+        try {
+            BeanStartupProfiler profiler = new BeanStartupProfiler(this.settings.getThreadNamePrefix());
+            beanFactory.addBeanPostProcessor(profiler);
+            beanFactory.registerSingleton(profilerName, profiler);
+            String reportListenerName = getClass().getName() + ".profilerReportListener";
+            ApplicationListener<ContextRefreshedEvent> reportListener = event -> {
+                if (logger.isInfoEnabled()) {
+                    logger.info(profiler.report());
+                }
+            };
+            beanFactory.registerSingleton(reportListenerName, reportListener);
+            logger.debug("Startup profiling enabled");
+        } catch (RuntimeException ex) {
+            logger.warn("Startup profiler installation failed; continuing without profiling", ex);
+        }
     }
 
     private void registerShutdownHook(ConfigurableListableBeanFactory beanFactory, ThreadPoolExecutor executor) {

@@ -52,18 +52,22 @@ public final class ParallelBootstrapSettings {
 
     private final boolean backgroundFactoryMethodBeans;
 
+    private final boolean profileStartup;
+
     private ParallelBootstrapSettings(
             boolean enabled,
             int poolSize,
             String threadNamePrefix,
             Predicate<String> candidateFilter,
-            boolean backgroundFactoryMethodBeans) {
+            boolean backgroundFactoryMethodBeans,
+            boolean profileStartup) {
 
         this.enabled = enabled;
         this.poolSize = poolSize;
         this.threadNamePrefix = threadNamePrefix;
         this.candidateFilter = candidateFilter;
         this.backgroundFactoryMethodBeans = backgroundFactoryMethodBeans;
+        this.profileStartup = profileStartup;
     }
 
     /**
@@ -125,6 +129,22 @@ public final class ParallelBootstrapSettings {
     }
 
     /**
+     * Whether opt-in startup profiling is enabled.
+     * <p>Defaults to {@code false}. When {@code true}, a {@link BeanStartupProfiler} is
+     * installed that records, for every singleton created during context refresh, the
+     * thread it was created on and the inclusive wall-clock time its creation took, and a
+     * summary of the slowest beans is logged once the context has refreshed. Profiling
+     * never changes application semantics; it is intended to identify which heavyweight
+     * beans are worth backgrounding. It is independent of the {@link #isEnabled() global
+     * kill-switch}, so a sequential baseline can be profiled by combining
+     * {@code profileStartup(true)} with {@code enabled(false)}.
+     * @return whether startup profiling is enabled
+     */
+    public boolean isProfileStartup() {
+        return this.profileStartup;
+    }
+
+    /**
      * Create settings with sensible defaults: enabled, a pool size of twice the
      * number of available processors, the {@code parallel-bootstrap-} thread prefix,
      * and a candidate filter that accepts every bean.
@@ -179,6 +199,8 @@ public final class ParallelBootstrapSettings {
         private Predicate<String> candidateFilter = beanName -> true;
 
         private boolean backgroundFactoryMethodBeans = false;
+
+        private boolean profileStartup = false;
 
         private Builder() {}
 
@@ -244,6 +266,21 @@ public final class ParallelBootstrapSettings {
         }
 
         /**
+         * Set whether opt-in startup profiling is enabled. Defaults to {@code false}.
+         * When {@code true}, a {@link BeanStartupProfiler} records per-bean creation
+         * thread and inclusive wall-clock duration and logs a summary of the slowest
+         * beans after refresh. Profiling never changes application semantics and is
+         * independent of the {@link #enabled(boolean) kill-switch}.
+         * @param profileStartup whether startup profiling is enabled
+         * @return this builder
+         * @see ParallelBootstrapSettings#isProfileStartup()
+         */
+        public Builder profileStartup(boolean profileStartup) {
+            this.profileStartup = profileStartup;
+            return this;
+        }
+
+        /**
          * Build the immutable {@link ParallelBootstrapSettings} instance.
          * @return the immutable settings instance
          */
@@ -253,7 +290,8 @@ public final class ParallelBootstrapSettings {
                     this.poolSize,
                     this.threadNamePrefix,
                     this.candidateFilter,
-                    this.backgroundFactoryMethodBeans);
+                    this.backgroundFactoryMethodBeans,
+                    this.profileStartup);
         }
     }
 }

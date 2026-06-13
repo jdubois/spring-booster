@@ -93,4 +93,16 @@ public @interface EnableParallelBootstrap {
      * @see ParallelBootstrapSettings#isBackgroundFactoryMethodBeans()
      */
     boolean backgroundFactoryMethodBeans() default false;
+
+    /**
+     * Whether opt-in startup profiling is enabled. Defaults to {@code false}. When
+     * {@code true}, a {@link BeanStartupProfiler} records, for every singleton created
+     * during refresh, the thread it was created on and the inclusive wall-clock time its
+     * creation took, and logs a summary of the slowest beans once the context has
+     * refreshed. Profiling never changes application semantics and is intended to identify
+     * which heavyweight beans are worth backgrounding.
+     * @return whether startup profiling is enabled
+     * @see ParallelBootstrapSettings#isProfileStartup()
+     */
+    boolean profileStartup() default false;
 }
