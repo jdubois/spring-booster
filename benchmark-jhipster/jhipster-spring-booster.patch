@@ -1,0 +1,63 @@
+diff --git a/pom.xml b/pom.xml
+index ccac093..7ea10ec 100644
+--- a/pom.xml
++++ b/pom.xml
+@@ -99,6 +99,13 @@
+             <groupId>org.springframework.boot</groupId>
+             <artifactId>spring-boot-h2console</artifactId>
+         </dependency>
++        <!-- Spring Booster: opt-in parallel bean instantiation during context bootstrap.
++             Installed locally via `mvn install` in the spring-booster project. -->
++        <dependency>
++            <groupId>io.github.jdubois</groupId>
++            <artifactId>spring-booster</artifactId>
++            <version>0.1.0-SNAPSHOT</version>
++        </dependency>
+         <dependency>
+             <groupId>org.springframework.boot</groupId>
+             <artifactId>spring-boot-jackson2</artifactId>
+diff --git a/src/main/java/io/github/jhipster/sample/JhipsterParallelBootstrapInitializer.java b/src/main/java/io/github/jhipster/sample/JhipsterParallelBootstrapInitializer.java
+new file mode 100644
+index 0000000..867fb0e
+--- /dev/null
++++ b/src/main/java/io/github/jhipster/sample/JhipsterParallelBootstrapInitializer.java
+@@ -0,0 +1,25 @@
++package io.github.jhipster.sample;
++
++import io.github.jdubois.springbooster.ParallelBootstrapBeanFactoryPostProcessor;
++import io.github.jdubois.springbooster.ParallelBootstrapSettings;
++import org.springframework.context.ApplicationContextInitializer;
++import org.springframework.context.ConfigurableApplicationContext;
++import org.springframework.core.env.Environment;
++
++public class JhipsterParallelBootstrapInitializer implements ApplicationContextInitializer<ConfigurableApplicationContext> {
++
++    @Override
++    public void initialize(ConfigurableApplicationContext applicationContext) {
++        Environment environment = applicationContext.getEnvironment();
++        boolean enabled =
++            environment.matchesProfiles("boost") ||
++            Boolean.parseBoolean(environment.getProperty("parallel-bootstrap", "false"));
++        if (!enabled) {
++            return;
++        }
++        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
++            .threadNamePrefix("jhipster-boot-")
++            .build();
++        applicationContext.addBeanFactoryPostProcessor(new ParallelBootstrapBeanFactoryPostProcessor(settings));
++    }
++}
+diff --git a/src/main/java/io/github/jhipster/sample/JhipsterSampleApplicationApp.java b/src/main/java/io/github/jhipster/sample/JhipsterSampleApplicationApp.java
+index 78e7fca..52dfd3a 100644
+--- a/src/main/java/io/github/jhipster/sample/JhipsterSampleApplicationApp.java
++++ b/src/main/java/io/github/jhipster/sample/JhipsterSampleApplicationApp.java
+@@ -68,6 +68,9 @@ public class JhipsterSampleApplicationApp {
+     public static void main(String[] args) {
+         var app = new SpringApplication(JhipsterSampleApplicationApp.class);
+         DefaultProfileUtil.addDefaultProfile(app);
++        // Opt-in parallel bean instantiation via Spring Booster. No-op unless the
++        // "boost" profile or parallel-bootstrap=true is set at runtime.
++        app.addInitializers(new JhipsterParallelBootstrapInitializer());
+         Environment env = app.run(args).getEnvironment();
+         logApplicationStartup(env);
+     }
