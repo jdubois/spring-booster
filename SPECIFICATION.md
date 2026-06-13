@@ -102,7 +102,7 @@ All code lives in a single package: `io.github.jdubois.springbooster`.
 | `EnableParallelBootstrap` | Public opt-in annotation. `@Import`s the registrar. Carries tuning attributes (`enabled`, `poolSize`, `threadNamePrefix`, `backgroundFactoryMethodBeans`). |
 | `ParallelBootstrapRegistrar` | `ImportBeanDefinitionRegistrar` activated by the annotation. Translates annotation attributes into `ParallelBootstrapSettings` and registers the post-processor as an infrastructure bean (idempotently). |
 | `ParallelBootstrapApplicationContextInitializer` | `ApplicationContextInitializer` entry point for programmatic / Spring Boot (`spring.factories`) registration, with no need for the annotation. |
-| `ParallelBootstrapSettings` | Immutable configuration (pool size, thread-name prefix, kill-switch, candidate `Predicate`, `backgroundFactoryMethodBeans` toggle). Built via a fluent `Builder`. Defines the per-bean opt-out attribute. |
+| `ParallelBootstrapSettings` | Immutable configuration (pool size, thread-name prefix, kill-switch, candidate `Predicate`, `backgroundFactoryMethodBeans` toggle, `minimumBackgroundCandidates` engagement guard, `adaptivePoolSize` toggle). Built via a fluent `Builder`. Defines the per-bean opt-out attribute. |
 | `BeanDependencyGraph` | Pure in-memory dependency graph of the bean definitions. Models both declared references **and** by-type autowiring edges (via `AutowiredEdgeResolver`), classifying each edge as *forced* or *sync*. Provides topological layering (Kahn) and cycle detection (Tarjan). Never triggers bean creation. |
 | `AutowiredEdgeResolver` | Reflectively resolves the by-type / `@Autowired` / `ObjectProvider` dependency edges that the declarations do not reveal (`@Bean` method params, autowired constructors, `@Autowired` fields/methods), unwrapping `ObjectProvider`/`ObjectFactory`/`Provider`/`Optional`/collections/maps/arrays. Resolves candidate names with eager init disabled, so it never instantiates a bean. |
 | `ParallelBootstrapBeanFactoryPostProcessor` | The engine. Plans candidates (connectivity-safe selection), marks them for background init, installs the bounded executor, and registers a listener to shut it down after refresh. |
@@ -311,6 +311,23 @@ cost of reintroducing the invisible by-type pull risk, so it should be paired wi
 
 ### 5.4 Possible future work
 
+* **Evidence-based co-location** — replace the blanket "co-locate every `@Bean` bean"
+  rule (§5.2.1) with static bytecode analysis of each `@Configuration` class: a config
+  that provably never captures the `ApplicationContext`/`BeanFactory`, implements a
+  framework callback, or self-invokes another `@Bean` has no invisible-lookup channel, so
+  its `@Bean` beans could safely re-enter the background set by default. This is the
+  structural fix that would let the *heavyweight* framework beans parallelize.
+* **Off-critical-path warm-up** — even when a heavyweight bean must stay on the main
+  thread for safety, the I/O it triggers (connection-pool fill, migrations, metamodel
+  build) and one-time class loading / static initialization could be pre-warmed
+  concurrently from the first instant of refresh, overlapping that latency with the
+  sequential main-thread work.
+* **Persisted, profile-guided scheduling** — feed `BeanStartupProfiler` output back as a
+  cost model on the next run to schedule the longest-pole beans first and refine the
+  engagement/pool-sizing heuristics (§6.2) from measured rather than structural data.
+* **Build-time / AOT planning** — compute the background-init decision set during Spring
+  AOT processing and emit it as metadata, so runtime planning cost approaches zero and the
+  library becomes GraalVM native-image friendly.
 * **Opt-in `getBean`-from-bean-code scanning** to also cover the residual component
   blind spot (above), letting `backgroundFactoryMethodBeans(true)` be safe on more
   applications.
@@ -319,6 +336,10 @@ cost of reintroducing the invisible by-type pull risk, so it should be paired wi
 * The `benchmark/` directory provides a reproducible Spring Petclinic startup
   harness; extending it to apps with many independent heavyweight beans would better
   quantify the win.
+
+The first round of this work has landed: the **engagement and pool-sizing tuning** of
+§6.2 (`minimumBackgroundCandidates` and `adaptivePoolSize`) makes the parallelism that is
+already safe pay off without ever making startup worse.
 
 ---
 
@@ -356,6 +377,30 @@ foundation for tuning. It is implemented as a `BeanStartupProfiler`, an
 * Profiling is **independent of the kill-switch**, so combining `profileStartup(true)`
   with `enabled(false)` measures a sequential baseline for comparison. Installation is
   wrapped in defensive `try/catch`, so a profiler failure can never break the context.
+
+### 6.2 Engagement and pool-sizing tuning
+
+Two settings keep the parallel bootstrap from costing more than it saves; both default
+to today's behaviour, so neither changes existing applications unless opted in.
+
+* **"Don't bother" guard (`minimumBackgroundCandidates`, default `1`).** Installing and
+  tearing down a bounded thread pool has a fixed cost. On applications whose startup is
+  dominated by a few main-thread `@Bean` beans, the handful of lightweight background
+  candidates can save less than the pool costs to run — occasionally making a "boosted"
+  start marginally *slower* than a sequential one (observed in `benchmark/`). When fewer
+  than `minimumBackgroundCandidates` beans would be backgrounded, `planCandidates` still
+  runs but the post-processor skips marking and executor installation, and the context
+  bootstraps sequentially. This extends graceful degradation (design goal #3) to
+  *never make startup worse*.
+* **Adaptive pool sizing (`adaptivePoolSize`, default `false`).** The fixed
+  `max(2, nCPU*2)` pool is a guess; a dependency-constrained candidate set may never run
+  more than a couple of beans at once, leaving the rest of the pool idle.
+  `BeanDependencyGraph.maxConcurrentWidth(candidates)` computes the widest topological
+  layer of the **candidate-induced subgraph** (only edges whose source *and* target are
+  background candidates) — the most beans that can truly run concurrently. When enabled,
+  the pool is capped at that width, floored at `2` and never exceeding the configured
+  `poolSize`. This trims idle threads and scheduling overhead without affecting which
+  beans are backgrounded (so it is orthogonal to the safety analysis of §4–§5).
 
 ---
 

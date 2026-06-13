@@ -157,6 +157,29 @@ profiler.getRecords().forEach(record ->
 > instantiation to the end of its initialization and therefore also covers the creation
 > of any dependencies created in between (mirroring nested `ApplicationStartup` steps).
 
+### Making sure parallelism never costs more than it saves
+
+Installing a thread pool has a fixed cost, and a dependency-constrained candidate set
+may not be able to use a large pool. Two opt-in settings (both defaulting to today's
+behaviour) tune this:
+
+```java
+@EnableParallelBootstrap(minimumBackgroundCandidates = 8, adaptivePoolSize = true)
+// or
+ParallelBootstrapSettings.builder()
+        .minimumBackgroundCandidates(8) // "don't bother" guard (default 1)
+        .adaptivePoolSize(true)         // size the pool to the achievable width (default false)
+        .build();
+```
+
+* **`minimumBackgroundCandidates`** — a "don't bother" guard. When fewer than this many
+  beans would be backgrounded, Spring Booster skips parallel bootstrap entirely and the
+  context starts sequentially, so you never pay the pool overhead for a negligible win.
+* **`adaptivePoolSize`** — when `true`, the bootstrap pool is capped at the *achievable
+  concurrency width* of the selected candidates (the most beans that can actually run at
+  once given their dependencies), with a floor of `2` and never exceeding `poolSize`.
+  This avoids idle threads when the candidates cannot all run concurrently.
+
 ## Requirements
 
 | | Version |
