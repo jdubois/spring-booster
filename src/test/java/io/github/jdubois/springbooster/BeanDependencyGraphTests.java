@@ -121,6 +121,62 @@ class BeanDependencyGraphTests {
     }
 
     @Test
+    void maxConcurrentWidthOfIndependentBeansIsTheirCount() {
+        registerWithConstructorRefs("a");
+        registerWithConstructorRefs("b");
+        registerWithConstructorRefs("c");
+
+        int width = build("a", "b", "c").maxConcurrentWidth(Set.of("a", "b", "c"));
+
+        assertThat(width).isEqualTo(3);
+    }
+
+    @Test
+    void maxConcurrentWidthOfAChainIsOne() {
+        registerWithConstructorRefs("a");
+        registerWithConstructorRefs("b", "a");
+        registerWithConstructorRefs("c", "b");
+
+        int width = build("a", "b", "c").maxConcurrentWidth(Set.of("a", "b", "c"));
+
+        assertThat(width).isEqualTo(1);
+    }
+
+    @Test
+    void maxConcurrentWidthOfADiamondIsTwo() {
+        registerWithConstructorRefs("top");
+        registerWithConstructorRefs("left", "top");
+        registerWithConstructorRefs("right", "top");
+        registerWithConstructorRefs("bottom", "left", "right");
+
+        int width =
+                build("top", "left", "right", "bottom").maxConcurrentWidth(Set.of("top", "left", "right", "bottom"));
+
+        assertThat(width).isEqualTo(2);
+    }
+
+    @Test
+    void maxConcurrentWidthIgnoresEdgesToNodesOutsideTheSubset() {
+        registerWithConstructorRefs("a");
+        registerWithConstructorRefs("b", "a");
+
+        // Restricted to {b}, the edge b -> a points outside the subset and is ignored,
+        // so b is a free root and the width is 1.
+        int width = build("a", "b").maxConcurrentWidth(Set.of("b"));
+
+        assertThat(width).isEqualTo(1);
+    }
+
+    @Test
+    void maxConcurrentWidthOfEmptySubsetIsZero() {
+        registerWithConstructorRefs("a");
+
+        int width = build("a").maxConcurrentWidth(Set.of());
+
+        assertThat(width).isZero();
+    }
+
+    @Test
     void directCycleIsDetected() {
         registerWithConstructorRefs("a", "b");
         registerWithConstructorRefs("b", "a");

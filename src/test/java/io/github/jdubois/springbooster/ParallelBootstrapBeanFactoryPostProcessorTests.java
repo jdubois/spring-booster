@@ -180,6 +180,81 @@ class ParallelBootstrapBeanFactoryPostProcessorTests {
         assertThat(isBackgroundInit("a")).isFalse();
     }
 
+    @Test
+    void minimumCandidatesGuardSkipsWhenTooFewCandidates() {
+        registerSingleton("only");
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                .minimumBackgroundCandidates(2)
+                .build();
+
+        new ParallelBootstrapBeanFactoryPostProcessor(settings).postProcessBeanFactory(this.beanFactory);
+
+        assertThat(isBackgroundInit("only")).isFalse();
+        assertThat(this.beanFactory.getBootstrapExecutor()).isNull();
+    }
+
+    @Test
+    void minimumCandidatesGuardEngagesWhenThresholdMet() {
+        registerSingleton("a");
+        registerSingleton("b");
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                .minimumBackgroundCandidates(2)
+                .build();
+
+        new ParallelBootstrapBeanFactoryPostProcessor(settings).postProcessBeanFactory(this.beanFactory);
+
+        assertThat(isBackgroundInit("a")).isTrue();
+        assertThat(isBackgroundInit("b")).isTrue();
+        assertThat(this.beanFactory.getBootstrapExecutor()).isNotNull();
+    }
+
+    @Test
+    void adaptivePoolSizeShrinksPoolToConcurrencyWidth() {
+        // Two independent singletons => concurrency width 2, well below the configured pool of 8.
+        registerSingleton("a");
+        registerSingleton("b");
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                .poolSize(8)
+                .adaptivePoolSize(true)
+                .build();
+
+        new ParallelBootstrapBeanFactoryPostProcessor(settings).postProcessBeanFactory(this.beanFactory);
+
+        assertThat(corePoolSize()).isEqualTo(2);
+    }
+
+    @Test
+    void adaptivePoolSizeNeverExceedsConfiguredPoolSize() {
+        for (int i = 0; i < 5; i++) {
+            registerSingleton("bean" + i);
+        }
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                .poolSize(3)
+                .adaptivePoolSize(true)
+                .build();
+
+        new ParallelBootstrapBeanFactoryPostProcessor(settings).postProcessBeanFactory(this.beanFactory);
+
+        // Width is 5 but the configured pool of 3 caps it.
+        assertThat(corePoolSize()).isEqualTo(3);
+    }
+
+    @Test
+    void fixedPoolSizeIsUsedWhenAdaptiveSizingDisabled() {
+        registerSingleton("a");
+        registerSingleton("b");
+        ParallelBootstrapSettings settings =
+                ParallelBootstrapSettings.builder().poolSize(8).build();
+
+        new ParallelBootstrapBeanFactoryPostProcessor(settings).postProcessBeanFactory(this.beanFactory);
+
+        assertThat(corePoolSize()).isEqualTo(8);
+    }
+
+    private int corePoolSize() {
+        return ((java.util.concurrent.ThreadPoolExecutor) this.beanFactory.getBootstrapExecutor()).getCorePoolSize();
+    }
+
     private void registerSingleton(String beanName) {
         this.beanFactory.registerBeanDefinition(beanName, new RootBeanDefinition(Object.class));
     }
