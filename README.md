@@ -145,10 +145,13 @@ scoped to beans you know are safe.
 
 When Spring AOT processing runs, Spring Booster can precompute its conservative
 parallel-bootstrap plan at build time and package it into the application as a
-generated resource. At runtime, Spring Booster loads that generated plan first and
-uses it directly when the current bean factory still matches the build-time
-fingerprint. If the generated plan is missing or stale, Spring Booster falls back to
-the existing runtime planner by default.
+generated resource. The generated AOT initialization code also pre-marks the
+selected bean definitions for background initialization, so they are ready to
+run as soon as the runtime bootstrap executor is installed. If those generated
+markers are unavailable, Spring Booster loads the generated plan next and uses
+it directly when the current bean factory still matches the build-time
+fingerprint. If the generated plan is missing or stale, Spring Booster falls
+back to the existing runtime planner by default.
 
 Use the new settings to control this behavior:
 

@@ -125,7 +125,12 @@ public class ParallelBootstrapBeanFactoryPostProcessor
             return;
         }
         try {
-            List<String> candidates = resolveCandidatePlan(beanFactory);
+            List<String> candidates = findPreMarkedCandidates(beanFactory);
+            if (candidates.isEmpty()) {
+                candidates = resolveCandidatePlan(beanFactory);
+            } else {
+                logger.debug("Using pre-marked Spring Booster background-init beans");
+            }
             if (candidates.isEmpty()) {
                 logger.debug("No eligible beans for parallel bootstrap; using sequential instantiation");
                 return;
@@ -206,6 +211,21 @@ public class ParallelBootstrapBeanFactoryPostProcessor
             logger.info("Failed to read generated Spring Booster bootstrap plan; ignoring it", ex);
             return null;
         }
+    }
+
+    private List<String> findPreMarkedCandidates(ConfigurableListableBeanFactory beanFactory) {
+        List<String> candidates = new java.util.ArrayList<>();
+        for (String beanName : beanFactory.getBeanDefinitionNames()) {
+            BeanDefinition beanDefinition = safeGetBeanDefinition(beanFactory, beanName);
+            if (beanDefinition instanceof AbstractBeanDefinition abstractBeanDefinition
+                    && abstractBeanDefinition.isBackgroundInit()
+                    && !beanDefinition.isAbstract()
+                    && beanDefinition.isSingleton()
+                    && !beanDefinition.isLazyInit()) {
+                candidates.add(beanName);
+            }
+        }
+        return candidates;
     }
 
     private void markForBackgroundInit(ConfigurableListableBeanFactory beanFactory, String beanName) {

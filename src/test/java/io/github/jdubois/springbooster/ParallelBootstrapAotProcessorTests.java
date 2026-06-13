@@ -18,12 +18,18 @@ package io.github.jdubois.springbooster;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.aot.generate.ClassNameGenerator;
 import org.springframework.aot.generate.DefaultGenerationContext;
+import org.springframework.aot.generate.GeneratedClass;
 import org.springframework.aot.generate.GeneratedFiles;
 import org.springframework.aot.generate.InMemoryGeneratedFiles;
+import org.springframework.aot.generate.MethodReference;
 import org.springframework.beans.factory.aot.BeanFactoryInitializationAotContribution;
+import org.springframework.beans.factory.aot.BeanFactoryInitializationCode;
 import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 import org.springframework.beans.factory.support.RootBeanDefinition;
 import org.springframework.javapoet.ClassName;
@@ -47,7 +53,10 @@ class ParallelBootstrapAotProcessorTests {
         InMemoryGeneratedFiles generatedFiles = new InMemoryGeneratedFiles();
         DefaultGenerationContext generationContext = new DefaultGenerationContext(
                 new ClassNameGenerator(ClassName.get("com.example", "Test")), generatedFiles);
-        contribution.applyTo(generationContext, null);
+        CapturingBeanFactoryInitializationCode initializationCode =
+                new CapturingBeanFactoryInitializationCode(generationContext);
+        contribution.applyTo(generationContext, initializationCode);
+        generationContext.writeGeneratedContent();
 
         String content = generatedFiles.getGeneratedFileContent(
                 GeneratedFiles.Kind.RESOURCE, ParallelBootstrapPlan.RESOURCE_LOCATION);
@@ -57,6 +66,11 @@ class ParallelBootstrapAotProcessorTests {
                 .contains("leaf", "consumer", ParallelBootstrapInfrastructure.POST_PROCESSOR_BEAN_NAME);
         assertThat(plan.getSyncDependencies()).containsKey("consumer");
         assertThat(plan.getSyncDependencies().get("consumer")).contains("leaf");
+        assertThat(initializationCode.getInitializers()).hasSize(1);
+        assertThat(allGeneratedSource(generatedFiles))
+                .contains("getBeanDefinition(\"leaf\")")
+                .contains("getBeanDefinition(\"consumer\")")
+                .contains("setBackgroundInit(true)");
     }
 
     @Test
@@ -78,5 +92,43 @@ class ParallelBootstrapAotProcessorTests {
 
     static class Consumer {
         Consumer(Leaf leaf) {}
+    }
+
+    private static String allGeneratedSource(InMemoryGeneratedFiles generatedFiles) throws IOException {
+        StringBuilder content = new StringBuilder();
+        for (String path : generatedFiles.getGeneratedFiles(GeneratedFiles.Kind.SOURCE).keySet()) {
+            content.append(generatedFiles.getGeneratedFileContent(GeneratedFiles.Kind.SOURCE, path));
+        }
+        return content.toString();
+    }
+
+    private static final class CapturingBeanFactoryInitializationCode implements BeanFactoryInitializationCode {
+
+        private final GeneratedClass generatedClass;
+
+        private final List<MethodReference> initializers = new ArrayList<>();
+
+        private CapturingBeanFactoryInitializationCode(DefaultGenerationContext generationContext) {
+            this.generatedClass = generationContext.getGeneratedClasses().addForFeature("TestCode", type -> {});
+        }
+
+        @Override
+        public org.springframework.aot.generate.GeneratedMethods getMethods() {
+            return this.generatedClass.getMethods();
+        }
+
+        @Override
+        public ClassName getClassName() {
+            return this.generatedClass.getName();
+        }
+
+        @Override
+        public void addInitializer(MethodReference methodReference) {
+            this.initializers.add(methodReference);
+        }
+
+        private List<MethodReference> getInitializers() {
+            return this.initializers;
+        }
     }
 }

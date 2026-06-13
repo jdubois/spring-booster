@@ -16,12 +16,16 @@
 
 package io.github.jdubois.springbooster;
 
+import javax.lang.model.element.Modifier;
 import org.jspecify.annotations.Nullable;
+import org.springframework.aot.generate.GeneratedMethod;
 import org.springframework.aot.generate.GenerationContext;
 import org.springframework.beans.factory.aot.BeanFactoryInitializationAotContribution;
 import org.springframework.beans.factory.aot.BeanFactoryInitializationAotProcessor;
 import org.springframework.beans.factory.aot.BeanFactoryInitializationCode;
+import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
+import org.springframework.beans.factory.support.AbstractBeanDefinition;
 
 /**
  * Build-time AOT processor that precomputes and serializes a conservative Spring
@@ -50,9 +54,28 @@ public final class ParallelBootstrapAotProcessor implements BeanFactoryInitializ
         @Override
         public void applyTo(
                 GenerationContext generationContext, BeanFactoryInitializationCode beanFactoryInitializationCode) {
+            GeneratedMethod generatedMethod = beanFactoryInitializationCode.getMethods()
+                    .add("markSpringBoosterBackgroundBeans", this::generateBackgroundInitMethod);
+            beanFactoryInitializationCode.addInitializer(generatedMethod.toMethodReference());
             generationContext
                     .getGeneratedFiles()
                     .addResourceFile(ParallelBootstrapPlan.RESOURCE_LOCATION, this.plan.toResourceContent());
+        }
+
+        private void generateBackgroundInitMethod(org.springframework.javapoet.MethodSpec.Builder method) {
+            method.addJavadoc("Mark precomputed Spring Booster beans for background initialization.");
+            method.addModifiers(Modifier.PRIVATE);
+            method.addParameter(ConfigurableListableBeanFactory.class, BeanFactoryInitializationCode.BEAN_FACTORY_VARIABLE);
+            for (String beanName : this.plan.getCandidateBeanNames()) {
+                method.addStatement(
+                        "$T beanDefinition = $L.getBeanDefinition($S)",
+                        BeanDefinition.class,
+                        BeanFactoryInitializationCode.BEAN_FACTORY_VARIABLE,
+                        beanName);
+                method.beginControlFlow("if (beanDefinition instanceof $T abstractBeanDefinition)", AbstractBeanDefinition.class);
+                method.addStatement("abstractBeanDefinition.setBackgroundInit(true)");
+                method.endControlFlow();
+            }
         }
     }
 }

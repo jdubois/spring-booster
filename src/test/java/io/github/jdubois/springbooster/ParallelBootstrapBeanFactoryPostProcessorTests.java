@@ -180,6 +180,19 @@ class ParallelBootstrapBeanFactoryPostProcessorTests {
         assertThat(isBackgroundInit("a")).isFalse();
     }
 
+    @Test
+    void reusesPreMarkedBeansWhenRuntimePlanningIsDisabled() {
+        registerSingleton("a");
+        ((AbstractBeanDefinition) this.beanFactory.getBeanDefinition("a")).setBackgroundInit(true);
+        ParallelBootstrapSettings settings =
+                ParallelBootstrapSettings.builder().runtimePlanningEnabled(false).build();
+
+        new ParallelBootstrapBeanFactoryPostProcessor(settings).postProcessBeanFactory(this.beanFactory);
+
+        assertThat(isBackgroundInit("a")).isTrue();
+        assertThat(this.beanFactory.getBootstrapExecutor()).isNotNull();
+    }
+
     private void registerSingleton(String beanName) {
         this.beanFactory.registerBeanDefinition(beanName, new RootBeanDefinition(Object.class));
     }
