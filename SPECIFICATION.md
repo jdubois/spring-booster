@@ -101,6 +101,7 @@ All code lives in a single package: `io.github.jdubois.springbooster`.
 
 | Class | Responsibility |
 |---|---|
+<<<<<<< HEAD
 | `EnableParallelBootstrap` | Public opt-in annotation. `@Import`s the registrar. Carries tuning attributes (`enabled`, `poolSize`, `threadNamePrefix`, `backgroundBeanNames`, `backgroundFactoryMethodBeans`, `deferProviderEdges`, `backgroundSharedInfraConsumers`, `barrierBeanNames`, `coBackgroundGroups`). |
 | `ParallelBootstrapRegistrar` | `ImportBeanDefinitionRegistrar` activated by the annotation. Translates annotation attributes into `ParallelBootstrapSettings` and registers the post-processor as an infrastructure bean (idempotently). |
 | `ParallelBootstrapApplicationContextInitializer` | `ApplicationContextInitializer` entry point for programmatic / Spring Boot (`spring.factories`) registration, with no need for the annotation. |
@@ -112,6 +113,13 @@ All code lives in a single package: `io.github.jdubois.springbooster`.
 | `BeanDependencyGraph` | Pure in-memory dependency graph of the bean definitions. Models both declared references **and** by-type autowiring edges (via `AutowiredEdgeResolver`), classifying each edge as *forced* or *sync* (and optionally *deferred*). Provides topological layering (Kahn) and cycle detection (Tarjan). Never triggers bean creation. |
 | `DynamicConfigurationDetector` | Statically classifies each `@Configuration`/factory bean as *dynamic* (capable of invisible by-type lookups — full `@Configuration`, `Aware`/`*Configurer`/`*Customizer`, or captured context / provider / `@Lazy` members) or *pure*. If any configuration in the context is dynamic, co-location edges (§5.2.1) are added for **every** factory-method bean; if none is, they are dropped entirely. When `bytecodeLookupDetection` is enabled it consults `BytecodeLookupDetector` to downgrade reflective false positives to *pure*. |
 | `BytecodeLookupDetector` | Experimental build-time bytecode scanner (Spring's repackaged ASM) that reports whether a configuration *actually* performs a dynamic bean lookup (`getBean*`/`getBeanProvider`, `ObjectProvider`/`ObjectFactory`/`Provider` dereference, or CGLIB `@Bean` self-invocation). Three-valued (`PURE`/`DYNAMIC`/`INCONCLUSIVE`); only ever relaxes a conservatively-dynamic classification on positive proof of purity. |
+=======
+| `EnableParallelBootstrap` | Public opt-in annotation. `@Import`s the registrar. Carries tuning attributes (`enabled`, `poolSize`, `threadNamePrefix`, `backgroundFactoryMethodBeans`, `useVirtualThreads`). |
+| `ParallelBootstrapRegistrar` | `ImportBeanDefinitionRegistrar` activated by the annotation. Translates annotation attributes into `ParallelBootstrapSettings` and registers the post-processor as an infrastructure bean (idempotently). |
+| `ParallelBootstrapApplicationContextInitializer` | `ApplicationContextInitializer` entry point for programmatic / Spring Boot (`spring.factories`) registration, with no need for the annotation. |
+| `ParallelBootstrapSettings` | Immutable configuration (pool size, thread-name prefix, kill-switch, candidate `Predicate`, `backgroundFactoryMethodBeans` toggle, `useVirtualThreads` toggle). Built via a fluent `Builder`. Defines the per-bean opt-out attribute. |
+| `BeanDependencyGraph` | Pure in-memory dependency graph of the bean definitions. Models both declared references **and** by-type autowiring edges (via `AutowiredEdgeResolver`), classifying each edge as *forced* or *sync*. Provides topological layering (Kahn) and cycle detection (Tarjan). Never triggers bean creation. |
+>>>>>>> origin/copilot/use-virtual-threads-evaluation
 | `AutowiredEdgeResolver` | Reflectively resolves the by-type / `@Autowired` / `ObjectProvider` dependency edges that the declarations do not reveal (`@Bean` method params, autowired constructors, `@Autowired` fields/methods), unwrapping `ObjectProvider`/`ObjectFactory`/`Provider`/`Optional`/collections/maps/arrays. Resolves candidate names with eager init disabled, so it never instantiates a bean. |
 | `ParallelBootstrapBeanFactoryPostProcessor` | The engine. Plans candidates (connectivity-safe selection), marks them for background init, installs the bounded executor, and registers a listener to shut it down after refresh. |
 | `package-info.java` | `@NullMarked` package declaration and overview. |
@@ -612,6 +620,7 @@ than producing wrong results (design goal #1).
 
 ## 6. Lifecycle and resource management
 
+<<<<<<< HEAD
 * The bootstrap executor is a `ThreadPoolExecutor` with a **fixed, bounded** size
   (`max(2, availableProcessors() * 2)` by default) and **daemon** threads named with the
   configured prefix (default `parallel-bootstrap-`).
@@ -627,8 +636,21 @@ than producing wrong results (design goal #1).
   the alias, and Spring resolves the bootstrap executor to the dedicated pool instead of Boot's
   shared task pool. A genuine, explicitly defined `bootstrapExecutor` bean is left untouched and
   still wins.
+=======
+* The bootstrap executor is, by default, a `ThreadPoolExecutor` with a **fixed,
+  bounded** size (`max(2, availableProcessors() * 2)`) and **daemon** threads named
+  with the configured prefix (default `parallel-bootstrap-`).
+* When `useVirtualThreads` is enabled (`@EnableParallelBootstrap(useVirtualThreads = true)`
+  or `ParallelBootstrapSettings.builder().useVirtualThreads(true)`), the executor is
+  instead an **unbounded virtual-thread-per-task** executor whose threads are named
+  with the same prefix; `poolSize` is ignored. This targets the frequently
+  blocking-bound nature of bean bootstrap and relies on the Java 25 baseline, where
+  blocking inside Spring's singleton-creation lock no longer pins a carrier (JDK 24,
+  JEP 491). The startup speedup ceiling remains the bean dependency graph's critical
+  path; CPU-bound workloads should keep the bounded pool.
+>>>>>>> origin/copilot/use-virtual-threads-evaluation
 * A `ContextRefreshedEvent` listener (registered as a manual singleton so the event
-  multicaster detects it) clears the factory's bootstrap executor and shuts the pool
+  multicaster detects it) clears the factory's bootstrap executor and shuts it
   down **immediately after refresh**, so threads do not outlive bootstrap.
 * The **global kill-switch** (`enabled = false`) registers the post-processor but
   makes it a no-op, allowing the feature to be disabled without code removal.
@@ -643,7 +665,7 @@ than producing wrong results (design goal #1).
 * **Artifacts:** main jar, `-sources.jar`, `-javadoc.jar` and POM (the source and
   javadoc jars are attached during `package`). `./mvnw install` installs them to
   `~/.m2`.
-* **Build JDK:** Java 17. The build must run on a JDK 17 because the Palantir Java
+* **Build JDK:** Java 25. The build must run on a JDK 25 because the Palantir Java
   Format engine used by Spotless runs under the build JDK.
 * **Code formatting:** Spotless with Palantir Java Format
   (`./mvnw spotless:apply` to reformat; `spotless:check` is bound to the `verify`

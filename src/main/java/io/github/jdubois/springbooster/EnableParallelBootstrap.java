@@ -111,6 +111,7 @@ public @interface EnableParallelBootstrap {
     boolean backgroundFactoryMethodBeans() default false;
 
     /**
+<<<<<<< HEAD
      * Whether by-type dependency edges reached only through an {@code ObjectProvider},
      * {@code ObjectFactory} or {@code Provider} wrapper, or through a {@code @Lazy}
      * injection point, are treated as <em>deferred</em> and excluded from the
@@ -221,4 +222,19 @@ public @interface EnableParallelBootstrap {
          */
         String[] value();
     }
+=======
+     * Whether the bootstrap executor should run each backgrounded bean on a virtual
+     * thread instead of on the bounded platform-thread pool. Defaults to
+     * {@code false}. When {@code true}, an unbounded virtual-thread-per-task executor
+     * is installed and {@link #poolSize()} is ignored.
+     * <p>Virtual threads suit the frequently blocking-bound nature of bean bootstrap:
+     * every independent blocking bean can make progress without the {@link #poolSize()}
+     * ceiling. On the Java 25 baseline, blocking inside the singleton-creation lock no
+     * longer pins a carrier (JEP&nbsp;491), so the blocking-bound work parallelizes
+     * cleanly. Purely CPU-bound bootstrap workloads should keep the bounded pool.
+     * @return whether to use a virtual-thread-per-task bootstrap executor
+     * @see ParallelBootstrapSettings#isUseVirtualThreads()
+     */
+    boolean useVirtualThreads() default false;
+>>>>>>> origin/copilot/use-virtual-threads-evaluation
 }

@@ -71,6 +71,7 @@ class ParallelBootstrapRegistrar implements ImportBeanDefinitionRegistrar {
             if (backgroundFactoryMethodBeans instanceof Boolean backgroundValue) {
                 builder.backgroundFactoryMethodBeans(backgroundValue);
             }
+<<<<<<< HEAD
             Object deferProviderEdges = attributes.get("deferProviderEdges");
             if (deferProviderEdges instanceof Boolean deferValue) {
                 builder.deferProviderEdges(deferValue);
@@ -111,6 +112,11 @@ class ParallelBootstrapRegistrar implements ImportBeanDefinitionRegistrar {
             Object generatedPlanRequired = attributes.get("generatedPlanRequired");
             if (generatedPlanRequired instanceof Boolean generatedPlanRequiredValue) {
                 builder.generatedPlanRequired(generatedPlanRequiredValue);
+=======
+            Object useVirtualThreads = attributes.get("useVirtualThreads");
+            if (useVirtualThreads instanceof Boolean useVirtualThreadsValue) {
+                builder.useVirtualThreads(useVirtualThreadsValue);
+>>>>>>> origin/copilot/use-virtual-threads-evaluation
             }
         }
         return builder.build();
