@@ -154,15 +154,25 @@ A bean is **structurally eligible only if all** of the following hold:
    *forced-mainline* beans: the framework eagerly instantiates them on the main
    thread before backgrounding a dependent (a `@Configuration` class hosting `@Bean`
    methods is the canonical factory bean), so they must run on the main thread.
-4. Its definition is an `AbstractBeanDefinition` (required to call
+4. It is **not itself a configuration class** (a `@Configuration` class, *full* or
+   *lite*, as marked by Spring's `ConfigurationClassPostProcessor`). Configuration
+   classes are *forced-mainline*: they are routinely resolved dynamically — by type
+   or **by annotation**, e.g. through `getBeansWithAnnotation(...)` — on the main
+   thread, in ways no static analysis can see. A configuration class that hosts a
+   `@Bean` method is already forced-mainline as that bean's factory (criterion 3),
+   but one that registers **no** eligible `@Bean` singleton would otherwise slip
+   through; this criterion keeps it on the main thread regardless. (Spring Security's
+   `EnableWebSecurityConfiguration`, fetched via
+   `getBeansWithAnnotation(EnableWebSecurity.class)`, is a concrete example.)
+5. Its definition is an `AbstractBeanDefinition` (required to call
    `setBackgroundInit`).
-5. It has **not opted out** via `ParallelBootstrapSettings.OPT_OUT_ATTRIBUTE`.
-6. Its type is **not framework infrastructure** — `BeanPostProcessor`,
+6. It has **not opted out** via `ParallelBootstrapSettings.OPT_OUT_ATTRIBUTE`.
+7. Its type is **not framework infrastructure** — `BeanPostProcessor`,
    `BeanFactoryPostProcessor`, `BeanFactoryInitializer`, or
    `SmartInitializingSingleton`.
-7. It passes the user-supplied **`candidateFilter`** predicate (default: accept
+8. It passes the user-supplied **`candidateFilter`** predicate (default: accept
    all).
-8. It is **not a `@Bean` factory-method bean**, *unless* the
+9. It is **not a `@Bean` factory-method bean**, *unless* the
    `backgroundFactoryMethodBeans` setting is enabled. By default every factory-method
    bean is co-located with its configuration class (§5), because configuration
    classes are the primary site of dynamic, by-type bean access during refresh.
@@ -270,16 +280,18 @@ captured `ApplicationContext`/`BeanFactory` used for a by-type lookup, or an
 `ObjectProvider`/`Lazy` resolved from a framework callback the class implements
 (`WebMvcConfigurer.addArgumentResolvers`, …).
 
-Because configuration classes are *always* created on the main thread (they are the
-factory of their `@Bean` beans, hence forced-mainline), `BeanDependencyGraph.build`
-adds, by default, a **factory→bean co-location sync edge** from every configuration to
-each of its `@Bean` beans. Mainline propagation then keeps every factory-method bean on
-the main thread. The remaining background candidates — component-scanned beans and
-beans registered as plain definitions — are reached only through the framework's
-ordinary singleton path, which honours background initialization. This is what makes
-the default accept-all `candidateFilter` safe on a fully auto-configured Spring Boot
-application (verified on Spring Petclinic: 56 beans backgrounded, context starts
-cleanly).
+Because configuration classes are *always* created on the main thread (criterion 4
+of §4 forces every configuration class mainline, and a configuration that hosts
+`@Bean` methods is additionally forced-mainline as their factory),
+`BeanDependencyGraph.build` adds, by default, a **factory→bean co-location sync edge**
+from every configuration to each of its `@Bean` beans. Mainline propagation then keeps
+every factory-method bean on the main thread. The remaining background candidates —
+component-scanned beans and beans registered as plain definitions — are reached only
+through the framework's ordinary singleton path, which honours background
+initialization. This is what makes the default accept-all `candidateFilter` safe on a
+fully auto-configured Spring Boot application (verified on Spring Petclinic: 56 beans
+backgrounded, context starts cleanly; and on the BootUI sample app: 19 beans
+backgrounded, context starts cleanly).
 
 Setting `backgroundFactoryMethodBeans(true)` (builder) or
 `@EnableParallelBootstrap(backgroundFactoryMethodBeans = true)` disables the

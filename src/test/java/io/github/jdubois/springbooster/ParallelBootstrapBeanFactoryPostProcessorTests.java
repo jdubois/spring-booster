@@ -35,6 +35,9 @@ import org.springframework.beans.factory.support.RootBeanDefinition;
  */
 class ParallelBootstrapBeanFactoryPostProcessorTests {
 
+    private static final String CONFIGURATION_CLASS_ATTRIBUTE =
+            "org.springframework.context.annotation.ConfigurationClassPostProcessor.configurationClass";
+
     private final DefaultListableBeanFactory beanFactory = new DefaultListableBeanFactory();
 
     @Test
@@ -156,6 +159,32 @@ class ParallelBootstrapBeanFactoryPostProcessorTests {
         List<String> candidates = new ParallelBootstrapBeanFactoryPostProcessor().planCandidates(this.beanFactory);
 
         assertThat(candidates).containsExactlyInAnyOrder("leaf", "consumer");
+    }
+
+    @Test
+    void doesNotBackgroundFullConfigurationClassBeans() {
+        RootBeanDefinition config = new RootBeanDefinition(Object.class);
+        config.setAttribute(CONFIGURATION_CLASS_ATTRIBUTE, "full");
+        this.beanFactory.registerBeanDefinition("config", config);
+        registerSingleton("included");
+
+        List<String> candidates = new ParallelBootstrapBeanFactoryPostProcessor().planCandidates(this.beanFactory);
+
+        // A configuration class with no @Bean singletons (so it is not reached by the
+        // factory->bean co-location rule) must still stay on the main thread, because it
+        // can be pulled dynamically by type or by annotation (e.g. getBeansWithAnnotation).
+        assertThat(candidates).contains("included").doesNotContain("config");
+    }
+
+    @Test
+    void doesNotBackgroundLiteConfigurationClassBeans() {
+        RootBeanDefinition config = new RootBeanDefinition(Object.class);
+        config.setAttribute(CONFIGURATION_CLASS_ATTRIBUTE, "lite");
+        this.beanFactory.registerBeanDefinition("config", config);
+
+        List<String> candidates = new ParallelBootstrapBeanFactoryPostProcessor().planCandidates(this.beanFactory);
+
+        assertThat(candidates).doesNotContain("config");
     }
 
     @Test

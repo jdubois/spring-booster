@@ -112,6 +112,31 @@ class ParallelBootstrapIntegrationTests {
     }
 
     @Test
+    void configurationClassPulledByAnnotationOnMainThreadIsNotBackgrounded() {
+        ConfigCreation.threads.clear();
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            // AnnotatedConfig is a @Configuration class with no @Bean singletons, so the
+            // factory->bean co-location rule does not reach it. PullerConfig's @Bean method
+            // runs on the main thread and looks AnnotatedConfig up by annotation through
+            // getBeansWithAnnotation(...) -- a dynamic access no static analysis can see.
+            // Before configuration classes were forced onto the main thread, AnnotatedConfig
+            // was backgrounded and this refresh failed with BeanCurrentlyInCreationException
+            // (the failure observed booting Spring Security's EnableWebSecurityConfiguration).
+            new ParallelBootstrapApplicationContextInitializer().initialize(context);
+            context.register(AnnotatedConfig.class, PullerConfig.class);
+            for (int i = 0; i < 4; i++) {
+                context.registerBeanDefinition("component" + i, new RootBeanDefinition(ComponentRecordingBean.class));
+            }
+            context.refresh();
+
+            assertThat(context.getBeansWithAnnotation(Marker.class).values())
+                    .hasAtLeastOneElementOfType(AnnotatedConfig.class);
+            // The configuration class must have been created on the main thread.
+            assertThat(ConfigCreation.threads).containsExactly("main");
+        }
+    }
+
+    @Test
     void factoryMethodBeansAreKeptMainlineByDefault() {
         RecordingConfig.creationThreads.clear();
         try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
@@ -291,6 +316,39 @@ class ParallelBootstrapIntegrationTests {
 
         ComponentRecordingBean() {
             creationThreads.add(Thread.currentThread().getName());
+        }
+    }
+
+    @java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.RUNTIME)
+    @java.lang.annotation.Target(java.lang.annotation.ElementType.TYPE)
+    @interface Marker {}
+
+    static class ConfigCreation {
+
+        static final Set<String> threads = ConcurrentHashMap.newKeySet();
+    }
+
+    // A configuration class with no @Bean singletons, so the factory->bean co-location
+    // rule does not reach it; it must still be kept on the main thread because it is
+    // pulled dynamically by annotation below.
+    @Marker
+    @Configuration(proxyBeanMethods = false)
+    static class AnnotatedConfig {
+
+        AnnotatedConfig() {
+            ConfigCreation.threads.add(Thread.currentThread().getName());
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class PullerConfig {
+
+        // Runs on the main thread and resolves AnnotatedConfig by annotation, a dynamic
+        // access that no static dependency analysis can observe.
+        @Bean
+        String puller(org.springframework.context.ApplicationContext applicationContext) {
+            return String.valueOf(
+                    applicationContext.getBeansWithAnnotation(Marker.class).size());
         }
     }
 }

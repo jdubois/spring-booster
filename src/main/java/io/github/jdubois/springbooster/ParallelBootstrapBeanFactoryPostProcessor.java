@@ -90,6 +90,19 @@ public class ParallelBootstrapBeanFactoryPostProcessor
 
     private static final Log logger = LogFactory.getLog(ParallelBootstrapBeanFactoryPostProcessor.class);
 
+    /**
+     * Bean definition attribute set by Spring's {@code ConfigurationClassPostProcessor}
+     * to mark a configuration class. The value is {@link #CONFIGURATION_CLASS_FULL} or
+     * {@link #CONFIGURATION_CLASS_LITE}. Referenced by its stable string value because
+     * the declaring {@code ConfigurationClassUtils} type is not public API.
+     */
+    private static final String CONFIGURATION_CLASS_ATTRIBUTE =
+            "org.springframework.context.annotation.ConfigurationClassPostProcessor.configurationClass";
+
+    private static final String CONFIGURATION_CLASS_FULL = "full";
+
+    private static final String CONFIGURATION_CLASS_LITE = "lite";
+
     private final ParallelBootstrapSettings settings;
 
     /**
@@ -240,11 +253,24 @@ public class ParallelBootstrapBeanFactoryPostProcessor
     }
 
     /**
-     * Collect the names of beans that the framework force-instantiates on the main
-     * thread before backgrounding a dependent: the factory bean of any bean (for
-     * example a {@code @Configuration} class hosting {@code @Bean} methods) and the
-     * target of any {@code depends-on} declaration. Such beans cannot themselves be
-     * background candidates.
+     * Collect the names of beans that must always be instantiated on the main thread,
+     * never in the background:
+     * <ul>
+     * <li>the factory bean of any bean (for example a {@code @Configuration} class
+     * hosting {@code @Bean} methods) and the target of any {@code depends-on}
+     * declaration, both of which the framework force-instantiates on the main thread
+     * before backgrounding a dependent; and</li>
+     * <li>every {@code @Configuration} / configuration-class bean itself (full or
+     * lite), because configuration classes are routinely retrieved dynamically by type
+     * or by annotation on the main thread &mdash; for example through
+     * {@code getBeansWithAnnotation(...)} &mdash; in ways no static analysis can see. A
+     * configuration class that registers no eligible {@code @Bean} singleton would
+     * otherwise not be reached by the factory&rarr;bean co-location rule and could be
+     * backgrounded, triggering a {@code BeanCurrentlyInCreationException} when it is
+     * pulled on the main thread (observed with Spring Security's
+     * {@code EnableWebSecurityConfiguration}, which is fetched via
+     * {@code getBeansWithAnnotation(EnableWebSecurity.class)}).</li>
+     * </ul>
      */
     private static Set<String> collectForcedMainlineBeans(ConfigurableListableBeanFactory beanFactory) {
         Set<String> forced = new HashSet<>();
@@ -260,8 +286,29 @@ public class ParallelBootstrapBeanFactoryPostProcessor
             if (dependsOn != null) {
                 Collections.addAll(forced, dependsOn);
             }
+            // The configuration-class marker is set by ConfigurationClassPostProcessor on
+            // the originally registered definition, which getMergedBeanDefinition does not
+            // necessarily carry over, so consult the raw definition for it.
+            if (isConfigurationClassBean(safeGetBeanDefinition(beanFactory, beanName))) {
+                forced.add(beanName);
+            }
         }
         return forced;
+    }
+
+    /**
+     * Whether the given bean definition denotes a configuration class (a
+     * {@code @Configuration} class, full or lite) as marked by Spring's
+     * {@code ConfigurationClassPostProcessor}. Such beans are kept on the main thread
+     * because they are frequently resolved dynamically &mdash; by type or by annotation
+     * &mdash; during context refresh.
+     */
+    private static boolean isConfigurationClassBean(@Nullable BeanDefinition bd) {
+        if (bd == null) {
+            return false;
+        }
+        Object attribute = bd.getAttribute(CONFIGURATION_CLASS_ATTRIBUTE);
+        return CONFIGURATION_CLASS_FULL.equals(attribute) || CONFIGURATION_CLASS_LITE.equals(attribute);
     }
 
     private boolean isSafeCandidate(
