@@ -393,8 +393,18 @@ holds structurally rather than by assumption. The barrier set only ever *removes
 propagation — it never adds edges — so it cannot create spurious cycles or perturb
 layering. The relaxation is **off by default**; if the predicate is even slightly
 violated the bean stays mainline, and the `BeanCurrentlyInCreationException` fast-fail
-remains the backstop (design goal #1). For `@Bean` consumers such as Flyway/Liquibase,
-enable `backgroundFactoryMethodBeans` as well — the two flags are orthogonal.
+remains the backstop (design goal #1).
+
+To make this usable for `@Bean` consumers such as Flyway/Liquibase, enabling
+`backgroundSharedInfraConsumers` keeps factory-method `@Bean` **co-location active**
+(§5.2.1) for the whole context — even when `backgroundFactoryMethodBeans` is *not* set —
+so that unrelated infrastructure (e.g. Spring Security's `authenticationEventPublisher`,
+resolved by type on the main thread) is not exposed through the invisible by-type lookup
+channel. It then selectively drops the co-location edge for the *verified pure barrier
+consumers only* — a factory-method `@Bean` whose every sync dependency is a completed-leaf
+barrier — letting those independent consumers overlap on background threads while every
+other `@Bean` stays main-thread. The flag is therefore self-contained and does **not**
+require `backgroundFactoryMethodBeans`.
 
 ### 5.3 Consequences
 

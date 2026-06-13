@@ -196,11 +196,19 @@ public class ParallelBootstrapBeanFactoryPostProcessor
         // caller has opted in to backgrounding factory-method beans, co-locate every
         // @Bean bean with its configuration class so the bootstrap stays safe against the
         // dynamic, by-type lookups that configuration classes perform on the main thread.
+        //
+        // The shared-infrastructure relaxation always keeps co-location active: it closes
+        // the invisible by-type lookup channel for every @Bean bean, and then selectively
+        // frees only the genuine completed-leaf-barrier consumers (see below). Disabling
+        // co-location globally (backgroundFactoryMethodBeans) would background every @Bean
+        // bean, reintroducing that channel for unrelated infrastructure beans such as
+        // Spring Security's authenticationEventPublisher (resolved by type on the main
+        // thread from AuthenticationManagerBuilder), which fails with a
+        // BeanCurrentlyInCreationException.
+        boolean colocateFactoryMethodBeans =
+                !this.settings.isBackgroundFactoryMethodBeans() || this.settings.isBackgroundSharedInfraConsumers();
         BeanDependencyGraph graph = BeanDependencyGraph.build(
-                beanFactory,
-                allNames,
-                !this.settings.isBackgroundFactoryMethodBeans(),
-                this.settings.isDeferProviderEdges());
+                beanFactory, allNames, colocateFactoryMethodBeans, this.settings.isDeferProviderEdges());
         Set<String> cyclic = graph.beansInCycles();
         Set<String> forcedMainline = collectForcedMainlineBeans(beanFactory);
 
@@ -215,13 +223,15 @@ public class ParallelBootstrapBeanFactoryPostProcessor
         // Every node that is not eligible runs on the main thread; propagate that
         // constraint across sync edges so no sync edge crosses the boundary. When the
         // shared-infrastructure relaxation is enabled, completed-leaf barriers are exempted
-        // from propagating mainline-ness to their pure consumers (see
-        // collectCompletedLeafBarriers).
+        // from propagating mainline-ness to their pure consumers, and those consumers are
+        // freed from co-location so independent consumers of one completed leaf can overlap.
+        Set<String> barriers = Collections.emptySet();
+        if (this.settings.isBackgroundSharedInfraConsumers()) {
+            barriers = applySharedInfraRelaxation(beanFactory, graph, eligible, cyclic, forcedMainline);
+        }
+
         Set<String> mainline = new LinkedHashSet<>(graph.getNodes());
         mainline.removeAll(eligible);
-        Set<String> barriers = this.settings.isBackgroundSharedInfraConsumers()
-                ? collectCompletedLeafBarriers(graph, eligible, cyclic, forcedMainline)
-                : Collections.emptySet();
         propagateMainline(graph, eligible, mainline, barriers);
 
         List<String> candidates = new ArrayList<>();
@@ -289,29 +299,49 @@ public class ParallelBootstrapBeanFactoryPostProcessor
     }
 
     /**
-     * Identify the <em>completed-leaf barriers</em>: main-thread beans across which
-     * mainline-ness is not propagated to their dependents (see {@link #propagateMainline}).
+     * Apply the completed-leaf-barrier relaxation (opt-in
+     * {@code backgroundSharedInfraConsumers}) on a <em>co-located</em> graph, and return
+     * the set of completed-leaf barriers whose mainline-ness must not propagate to their
+     * pure consumers (used by {@link #propagateMainline}).
      *
-     * <p>A bean {@code B} qualifies only when every condition holds:
+     * <p>This runs while every {@code @Bean} factory-method bean is still co-located with
+     * its configuration class, so the invisible by-type lookup channel stays closed for
+     * the whole context (in particular for unrelated infrastructure beans such as Spring
+     * Security's {@code authenticationEventPublisher}, which is resolved by type on the
+     * main thread from {@code AuthenticationManagerBuilder} and must therefore stay on the
+     * main thread). The method then carves out exactly one safe widening:
      * <ol>
-     * <li><b>Force-instantiated on the main thread &amp; acyclic.</b> {@code B} is in the
-     * forced-mainline set (a factory bean, a {@code depends-on} target, or a configuration
-     * class) and is not part of a dependency cycle, so the framework is guaranteed to
-     * create it on the main thread.</li>
-     * <li><b>Leaf with respect to background candidates.</b> {@code B} has no sync
-     * dependency on any currently-eligible (backgroundable) bean, so its own construction
-     * is self-contained and cannot pull a background bean mid-creation.</li>
+     * <li><b>Identify completed-leaf barriers.</b> A bean that is force-instantiated on the
+     * main thread (a factory bean, {@code depends-on} target, or configuration class),
+     * acyclic, and whose sync dependencies are all non-eligible (it pulls no backgroundable
+     * bean during its own construction) is a barrier: the framework finishes it before
+     * fan-out and consumers only read it. The leaf check uses the <em>initial</em> eligible
+     * set, the conservative choice.</li>
+     * <li><b>Free the pure barrier consumers from co-location.</b> A co-located
+     * factory-method {@code @Bean} bean whose <em>every</em> sync dependency is a barrier
+     * (and which depends on at least one) reads only already-completed leaves, so its
+     * co-location edge is dropped. Independent such consumers (the classic Flyway +
+     * Liquibase over one shared {@code DataSource} barrier) then land in the same
+     * construction layer and overlap on background threads. A bean with any non-barrier
+     * dependency &mdash; or no barrier dependency at all &mdash; keeps its co-location edge
+     * and stays on the main thread.</li>
      * </ol>
      *
-     * <p>The set is computed from the <em>initial</em> eligible set (before propagation),
-     * which is the conservative choice: an eligible sync dependency only ever disqualifies
-     * a would-be barrier, never the reverse. Dependents reach the barrier through the
-     * framework's ordinary, background-aware singleton path, and the barrier&rarr;dependent
-     * edge keeps the barrier ordered strictly earlier in the layering, which together
-     * establish that the dependent only reads an already-completed singleton.
+     * <p>The relaxation only ever <em>removes</em> co-location edges for verified pure
+     * consumers and exempts the barrier&rarr;consumer propagation direction; the final
+     * {@link #propagateMainline} still pulls back any freed bean that is connected to the
+     * main thread by a visible edge, and the {@code BeanCurrentlyInCreationException}
+     * fast-fail remains the backstop for an invisible eager lookup (design goal #1).
      */
-    private static Set<String> collectCompletedLeafBarriers(
-            BeanDependencyGraph graph, Set<String> eligible, Set<String> cyclic, Set<String> forcedMainline) {
+    private static Set<String> applySharedInfraRelaxation(
+            ConfigurableListableBeanFactory beanFactory,
+            BeanDependencyGraph graph,
+            Set<String> eligible,
+            Set<String> cyclic,
+            Set<String> forcedMainline) {
+        // 1. Completed-leaf barriers: force-instantiated, acyclic, main-thread beans that
+        // pull no still-eligible bean during their own construction (computed against the
+        // initial eligible set, which is the conservative choice).
         Set<String> barriers = new LinkedHashSet<>();
         for (String node : graph.getNodes()) {
             if (!forcedMainline.contains(node) || cyclic.contains(node)) {
@@ -326,6 +356,39 @@ public class ParallelBootstrapBeanFactoryPostProcessor
             }
             if (leaf) {
                 barriers.add(node);
+            }
+        }
+
+        // 2. Free the pure barrier consumers from co-location so independent consumers of a
+        // completed leaf can overlap. A consumer qualifies only when every one of its sync
+        // dependencies is a barrier (it reads only already-completed leaves) and it is not a
+        // barrier itself (freeing a barrier would break the "completed before fan-out"
+        // guarantee its own consumers rely on).
+        for (String node : new LinkedHashSet<>(graph.getNodes())) {
+            if (barriers.contains(node) || !eligible.contains(node)) {
+                continue;
+            }
+            BeanDefinition mbd = safeGetMergedBeanDefinition(beanFactory, node);
+            String factoryBeanName = (mbd != null) ? mbd.getFactoryBeanName() : null;
+            if (factoryBeanName == null || !graph.getNodes().contains(factoryBeanName)) {
+                continue;
+            }
+            Set<String> syncDeps = graph.getSyncDependencies(node);
+            if (syncDeps.isEmpty()) {
+                continue;
+            }
+            boolean pureBarrierConsumer = true;
+            for (String dependency : syncDeps) {
+                if (!barriers.contains(dependency)) {
+                    pureBarrierConsumer = false;
+                    break;
+                }
+            }
+            if (pureBarrierConsumer) {
+                // Drop the configuration -> @Bean co-location edge so this consumer can
+                // background; its genuine dependency on the (main-thread) barrier remains in
+                // the full graph, keeping the barrier ordered strictly earlier.
+                graph.removeSyncEdge(factoryBeanName, node);
             }
         }
         return barriers;

@@ -172,12 +172,9 @@ planner that *depending on an already-finished singleton is safe*, so those
 independent consumers can run concurrently:
 
 ```java
-@EnableParallelBootstrap(
-        backgroundFactoryMethodBeans = true,
-        backgroundSharedInfraConsumers = true)
+@EnableParallelBootstrap(backgroundSharedInfraConsumers = true)
 // or
 ParallelBootstrapSettings.builder()
-        .backgroundFactoryMethodBeans(true)
         .backgroundSharedInfraConsumers(true)
         .build();
 ```
@@ -188,9 +185,11 @@ own — from propagating main-thread-ness to the beans that merely *read* it. Th
 reverse direction (a main-thread bean that depends on a candidate) is never exempted,
 because that is a genuine in-flight pull. It is off by default and falls back to
 sequential whenever the predicate is even slightly violated, so it stays faithful to
-the library's "sequential when in doubt" design goal. For `@Bean` consumers like
-Flyway/Liquibase, enable `backgroundFactoryMethodBeans` as well (the two flags are
-orthogonal).
+the library's "sequential when in doubt" design goal. The flag keeps factory-method
+`@Bean` co-location active (so unrelated infrastructure stays on the main thread) and
+selectively frees only the verified pure barrier consumers, so it works for `@Bean`
+consumers like Flyway/Liquibase on its own — you do **not** need to also enable
+`backgroundFactoryMethodBeans`.
 
 ## Requirements
 

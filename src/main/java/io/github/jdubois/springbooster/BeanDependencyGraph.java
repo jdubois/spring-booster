@@ -358,6 +358,22 @@ final class BeanDependencyGraph {
     }
 
     /**
+     * Remove a single <em>sync</em> dependency edge ({@code from} &rarr; {@code to}) from
+     * the connectivity view, if present. Used by the planner's
+     * {@code backgroundSharedInfraConsumers} relaxation to drop a configuration&rarr;
+     * {@code @Bean} <em>co-location</em> edge for a verified completed-leaf-barrier
+     * consumer, so that consumer can be backgrounded. Only the sync-connectivity view is
+     * affected; the full {@link #dependencies} construction graph (and therefore cycle
+     * detection and layering) is left unchanged.
+     */
+    void removeSyncEdge(String from, String to) {
+        Set<String> edges = this.syncDependencies.get(from);
+        if (edges != null) {
+            edges.remove(to);
+        }
+    }
+
+    /**
      * Compute a topological layering of the graph using Kahn's algorithm.
      * <p>Each returned set contains beans whose dependencies are all satisfied by
      * earlier layers, and which can therefore be instantiated concurrently. Beans

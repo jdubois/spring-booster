@@ -71,11 +71,10 @@ comparison is apples-to-apples (identical classpath, profile, and artifact).
   `ParallelBootstrapBeanFactoryPostProcessor` with the accept-all default.
 * **Boosted + shared-infra leaf** — run with `--sample.parallel-bootstrap=true
   --sample.shared-infra-consumers=true`. In addition to parallel bootstrap, this
-  enables `backgroundFactoryMethodBeans(true)` and the new
-  `backgroundSharedInfraConsumers(true)` relaxation so the two independent schema
-  migration engines (Flyway + Liquibase) that share one `DataSource` can run
-  concurrently on background threads instead of being serialized onto the main
-  thread (see [Backgrounding the shared-infra consumers](#backgrounding-the-shared-infra-consumers)).
+  enables the new `backgroundSharedInfraConsumers(true)` relaxation so the two
+  independent schema migration engines (Flyway + Liquibase) that share one
+  `DataSource` can run concurrently on background threads instead of being
+  serialized onto the main thread (see [Backgrounding the shared-infra consumers](#backgrounding-the-shared-infra-consumers)).
 
 Startup time is taken from Spring Boot's own
 `Started BootUiSampleApplication in X seconds` log line. Each variant runs one
@@ -143,19 +142,26 @@ factory-method beans that read the **same** `DataSource`, so the safe default
 keeps them on the main thread and runs them sequentially.
 
 The `backgroundSharedInfraConsumers` relaxation (main project `SPECIFICATION.md`
-§5.2.2) targets exactly this shape: a *completed-leaf barrier* (the `DataSource`,
-a forced-mainline, acyclic, terminal singleton the framework finishes on the main
-thread before fan-out) no longer drags its independent read-only consumers back
-onto the main thread. With it — plus `backgroundFactoryMethodBeans` so the `@Bean`
-engines become eligible at all — Flyway and Liquibase land in the **same
-construction layer** and overlap on background threads.
+§5.2.3) targets exactly this shape: a *completed-leaf barrier* (a forced-mainline,
+acyclic, terminal singleton the framework finishes on the main thread before
+fan-out) no longer drags its independent read-only consumers back onto the main
+thread. The flag keeps factory-method `@Bean` co-location active for the rest of the
+context (so unrelated infrastructure such as Spring Security's
+`authenticationEventPublisher` stays on the main thread) and selectively frees only
+the verified pure barrier consumers — so it works on its own and does **not** need
+`backgroundFactoryMethodBeans`.
 
-The **boosted + shared-infra leaf** variant enables both flags
-(`--sample.shared-infra-consumers=true`). The expected mechanism is that
-overlapping the two migration engines recovers the regression the plain boosted
-variant pays: instead of `t(Flyway) + t(Liquibase)` on the main thread, the
-critical path becomes roughly `max(t(Flyway), t(Liquibase))`. The variant is
-opt-in and preserves the fail-fast → sequential fallback, so a clean boot
-(no `BeanCurrentlyInCreationException`) is the correctness check; the benchmark
-table then shows whether the overlap turns the +0.8 s regression into a net win.
-Run `./run-benchmark.sh` to reproduce all three variants on your own machine.
+The **boosted + shared-infra leaf** variant enables this single flag
+(`--sample.shared-infra-consumers=true`). The variant is opt-in and preserves the
+fail-fast → sequential fallback, so a clean boot (no
+`BeanCurrentlyInCreationException`) is the correctness check.
+
+Note on this sample: the `DataSource` here is itself an auto-configured,
+co-located `@Bean` (structurally backgroundable) rather than a `depends-on` target,
+so it is **not** a forced-mainline barrier. Under the deliberately conservative
+barrier predicate, Flyway and Liquibase therefore stay on the main thread and are
+**not** overlapped — the variant boots cleanly and performs on par with the plain
+boosted run rather than recovering the regression. This is the honest, "sequential
+when in doubt" outcome; the relaxation only materialises overlap when the shared leaf
+is a genuine forced-mainline barrier (e.g. a `depends-on` target). Run
+`./run-benchmark.sh` to reproduce all three variants on your own machine.
