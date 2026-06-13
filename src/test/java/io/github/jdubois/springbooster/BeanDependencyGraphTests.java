@@ -208,7 +208,24 @@ class BeanDependencyGraphTests {
     }
 
     @Test
-    void factoryMethodBeanIsColocatedWithConfigurationByDefault() {
+    void dynamicFactoryMethodBeanIsColocatedWithConfigurationByDefault() {
+        register("config", DynamicFactoryConfig.class);
+        RootBeanDefinition product = new RootBeanDefinition();
+        product.setFactoryBeanName("config");
+        product.setFactoryMethodName("product");
+        this.beanFactory.registerBeanDefinition("product", product);
+
+        BeanDependencyGraph graph = BeanDependencyGraph.build(this.beanFactory, List.of("config", "product"), true);
+
+        // The dynamic configuration gains a co-location sync edge to its @Bean product, so
+        // the planner keeps the product on the configuration's (main) thread.
+        assertThat(graph.getSyncDependencies("config")).contains("product");
+        // The genuine construction dependency still runs in the opposite direction.
+        assertThat(graph.getDependencies("product")).contains("config");
+    }
+
+    @Test
+    void pureFactoryMethodBeanIsNotColocatedWithConfiguration() {
         register("config", FactoryConfig.class);
         RootBeanDefinition product = new RootBeanDefinition();
         product.setFactoryBeanName("config");
@@ -217,16 +234,16 @@ class BeanDependencyGraphTests {
 
         BeanDependencyGraph graph = BeanDependencyGraph.build(this.beanFactory, List.of("config", "product"), true);
 
-        // The configuration gains a co-location sync edge to its @Bean product, so the
-        // planner keeps the product on the configuration's (main) thread.
-        assertThat(graph.getSyncDependencies("config")).contains("product");
+        // A pure configuration performs no invisible by-type lookup, so its @Bean product
+        // is left free to be backgrounded: no co-location edge is added.
+        assertThat(graph.getSyncDependencies("config")).doesNotContain("product");
         // The genuine construction dependency still runs in the opposite direction.
         assertThat(graph.getDependencies("product")).contains("config");
     }
 
     @Test
     void factoryMethodColocationCanBeDisabled() {
-        register("config", FactoryConfig.class);
+        register("config", DynamicFactoryConfig.class);
         RootBeanDefinition product = new RootBeanDefinition();
         product.setFactoryBeanName("config");
         product.setFactoryMethodName("product");
@@ -259,6 +276,16 @@ class BeanDependencyGraphTests {
     static class Leaf {}
 
     static class FactoryConfig {
+
+        Leaf product() {
+            return new Leaf();
+        }
+    }
+
+    static class DynamicFactoryConfig implements org.springframework.context.ApplicationContextAware {
+
+        @Override
+        public void setApplicationContext(org.springframework.context.ApplicationContext applicationContext) {}
 
         Leaf product() {
             return new Leaf();

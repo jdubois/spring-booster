@@ -112,16 +112,31 @@ class ParallelBootstrapIntegrationTests {
     }
 
     @Test
-    void factoryMethodBeansAreKeptMainlineByDefault() {
+    void pureFactoryMethodBeansAreBackgroundedByDefault() {
         RecordingConfig.creationThreads.clear();
         try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
-            // Default settings: factory-method beans are co-located with their
-            // configuration class, so none of the @Bean beans is backgrounded.
+            // Default settings: a pure configuration (no dynamic by-type lookups) no longer
+            // co-locates its @Bean beans, so they are free to be backgrounded.
             new ParallelBootstrapApplicationContextInitializer().initialize(context);
             context.register(PlainRecordingConfig.class);
             context.refresh();
             assertThat(context.getBeansOfType(RecordingBean.class)).hasSize(4);
-            assertThat(RecordingConfig.creationThreads).noneMatch(name -> name.startsWith("parallel-bootstrap-"));
+            assertThat(RecordingConfig.creationThreads).anyMatch(name -> name.startsWith("parallel-bootstrap-"));
+        }
+    }
+
+    @Test
+    void dynamicFactoryMethodBeansAreKeptMainlineByDefault() {
+        DynamicRecordingConfig.creationThreads.clear();
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            // Default settings: a dynamic configuration (here it captures the
+            // ApplicationContext) keeps its @Bean beans co-located on the main thread.
+            new ParallelBootstrapApplicationContextInitializer().initialize(context);
+            context.register(DynamicRecordingConfig.class);
+            context.refresh();
+            assertThat(context.getBeansOfType(RecordingBean.class)).hasSize(4);
+            assertThat(DynamicRecordingConfig.creationThreads)
+                    .noneMatch(name -> name.startsWith("parallel-bootstrap-"));
         }
     }
 
@@ -210,6 +225,35 @@ class ParallelBootstrapIntegrationTests {
         @Bean
         RecordingBean four() {
             return new RecordingBean(RecordingConfig.creationThreads);
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class DynamicRecordingConfig implements org.springframework.context.ApplicationContextAware {
+
+        static final Set<String> creationThreads = ConcurrentHashMap.newKeySet();
+
+        @Override
+        public void setApplicationContext(org.springframework.context.ApplicationContext applicationContext) {}
+
+        @Bean
+        RecordingBean one() {
+            return new RecordingBean(creationThreads);
+        }
+
+        @Bean
+        RecordingBean two() {
+            return new RecordingBean(creationThreads);
+        }
+
+        @Bean
+        RecordingBean three() {
+            return new RecordingBean(creationThreads);
+        }
+
+        @Bean
+        RecordingBean four() {
+            return new RecordingBean(creationThreads);
         }
     }
 

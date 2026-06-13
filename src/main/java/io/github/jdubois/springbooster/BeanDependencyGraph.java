@@ -180,6 +180,15 @@ final class BeanDependencyGraph {
      * definitions &mdash; are reached only through the framework's ordinary singleton path,
      * which honours background initialization.
      *
+     * <p>The co-location edge is added only for configurations that {@link
+     * DynamicConfigurationDetector#isDynamicConfiguration classify as <em>dynamic</em>}
+     * &mdash; those that actually perform (or could perform) invisible by-type lookups.
+     * A <em>pure</em> configuration, whose {@code @Bean} methods merely return
+     * {@code new X(injectedParameters)}, performs no such lookup, so its beans (and the
+     * subtrees rooted at them) are left free to be backgrounded. The detector errs
+     * towards {@code dynamic}, so an unrecognised configuration shape stays safely
+     * co-located.
+     *
      * <p>The edge is recorded only in the sync-connectivity view used by the planner, not
      * as a construction dependency, so it never introduces a spurious cycle or perturbs
      * the topological layering (the genuine dependency runs the opposite direction: the
@@ -187,13 +196,19 @@ final class BeanDependencyGraph {
      */
     private static void addFactoryColocationEdges(
             ConfigurableListableBeanFactory beanFactory, Set<String> nodes, Map<String, Set<String>> syncDependencies) {
+        Map<String, Boolean> dynamicByFactory = new HashMap<>();
         for (String beanName : nodes) {
             BeanDefinition mbd = safeGetMergedBeanDefinition(beanFactory, beanName);
             if (mbd == null) {
                 continue;
             }
             String factoryBeanName = mbd.getFactoryBeanName();
-            if (factoryBeanName != null && !factoryBeanName.equals(beanName) && nodes.contains(factoryBeanName)) {
+            if (factoryBeanName == null || factoryBeanName.equals(beanName) || !nodes.contains(factoryBeanName)) {
+                continue;
+            }
+            boolean dynamic = dynamicByFactory.computeIfAbsent(
+                    factoryBeanName, name -> DynamicConfigurationDetector.isDynamicConfiguration(beanFactory, name));
+            if (dynamic) {
                 syncDependencies
                         .computeIfAbsent(factoryBeanName, key -> new LinkedHashSet<>())
                         .add(beanName);
