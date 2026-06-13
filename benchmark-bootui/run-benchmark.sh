@@ -3,7 +3,7 @@
 # run-benchmark.sh — compare BootUI sample-app startup time WITHOUT and WITH
 # Spring Booster's parallel bean instantiation.
 #
-# It runs the very same application jar three times:
+# It runs the very same application jar six times:
 #   * baseline — sequential bootstrap (Spring Booster inactive)
 #   * boosted  — parallel bootstrap (--sample.parallel-bootstrap=true), which
 #                activates io.github.jdubois:spring-booster with the accept-all
@@ -19,6 +19,14 @@
 #                @Bean beans (Spring Security's filter chain and the migrators) so they
 #                may background even though dynamic auto-configurations keep every other
 #                @Bean on the main thread. Forced-mainline names safely stay sequential.
+#   * boosted+barrier — parallel bootstrap plus a named completed-leaf barrier
+#                (--sample.barrier-bean-names=dataSource), which pins a shared singleton
+#                that is exposed only as a co-located @Bean (so structural detection misses
+#                it) and lets its independent consumers overlap.
+#   * boosted+co-background — parallel bootstrap plus a co-background group
+#                (--sample.co-background-groups=flyway,liquibase), which asserts the two
+#                migrators are mutually independent so the planner drops both their
+#                co-location and the sync edges between them.
 #
 # The toggle is a PROPERTY, not a Spring profile, on purpose: the sample app's
 # default profile is "dev" (spring.profiles.default=dev → in-memory H2 + simple
@@ -92,6 +100,19 @@ sharedinfra_times="$(run_variant 'BOOSTED+SHARED-INFRA (parallel bootstrap + sha
 allowlist_times="$(run_variant 'BOOSTED+ALLOWLIST (parallel bootstrap + per-bean allowlist)' \
     --sample.parallel-bootstrap=true \
     --sample.background-bean-names=springSecurityFilterChain,flyway,liquibase)"
+# Fifth variant: parallel bootstrap PLUS a named completed-leaf barrier. The shared
+# DataSource is exposed only as a co-located @Bean of a dynamic auto-configuration, so the
+# structural barrier predicate cannot detect it; naming it pins it to the main thread and
+# lets its independent consumers (Flyway + Liquibase) overlap on background threads.
+barrier_times="$(run_variant 'BOOSTED+BARRIER (parallel bootstrap + named barrier)' \
+    --sample.parallel-bootstrap=true \
+    --sample.barrier-bean-names=dataSource)"
+# Sixth variant: parallel bootstrap PLUS a co-background group. It asserts that the two
+# migration engines are mutually independent, so the planner drops their co-location AND the
+# sync edges between them, letting each overlap a sibling it appeared to depend on.
+cobackground_times="$(run_variant 'BOOSTED+CO-BACKGROUND (parallel bootstrap + co-background group)' \
+    --sample.parallel-bootstrap=true \
+    --sample.co-background-groups=flyway,liquibase)"
 
 # shellcheck disable=SC2086
 read -r b_min b_med b_mean b_max <<<"$(stats $baseline_times)"
@@ -101,6 +122,10 @@ read -r x_min x_med x_mean x_max <<<"$(stats $boosted_times)"
 read -r s_min s_med s_mean s_max <<<"$(stats $sharedinfra_times)"
 # shellcheck disable=SC2086
 read -r a_min a_med a_mean a_max <<<"$(stats $allowlist_times)"
+# shellcheck disable=SC2086
+read -r r_min r_med r_mean r_max <<<"$(stats $barrier_times)"
+# shellcheck disable=SC2086
+read -r c_min c_med c_mean c_max <<<"$(stats $cobackground_times)"
 
 # Improvement on the median (positive = boosted is faster).
 delta="$(awk -v a="$b_med" -v b="$x_med" 'BEGIN { printf "%+.3f", a - b }')"
@@ -111,6 +136,12 @@ spct="$(awk -v a="$b_med" -v b="$s_med" 'BEGIN { if (a > 0) printf "%+.1f", (a -
 # Improvement of the allowlist variant on the median (positive = faster than baseline).
 adelta="$(awk -v a="$b_med" -v b="$a_med" 'BEGIN { printf "%+.3f", a - b }')"
 apct="$(awk -v a="$b_med" -v b="$a_med" 'BEGIN { if (a > 0) printf "%+.1f", (a - b) / a * 100; else printf "n/a" }')"
+# Improvement of the named-barrier variant on the median (positive = faster than baseline).
+rdelta="$(awk -v a="$b_med" -v b="$r_med" 'BEGIN { printf "%+.3f", a - b }')"
+rpct="$(awk -v a="$b_med" -v b="$r_med" 'BEGIN { if (a > 0) printf "%+.1f", (a - b) / a * 100; else printf "n/a" }')"
+# Improvement of the co-background-group variant on the median (positive = faster than baseline).
+cdelta="$(awk -v a="$b_med" -v b="$c_med" 'BEGIN { printf "%+.3f", a - b }')"
+cpct="$(awk -v a="$b_med" -v b="$c_med" 'BEGIN { if (a > 0) printf "%+.1f", (a - b) / a * 100; else printf "n/a" }')"
 
 # shellcheck disable=SC2086
 baseline_list="$(printf '%s ' $baseline_times | sed 's/ $//; s/ /, /g')"
@@ -120,6 +151,10 @@ boosted_list="$(printf '%s ' $boosted_times | sed 's/ $//; s/ /, /g')"
 sharedinfra_list="$(printf '%s ' $sharedinfra_times | sed 's/ $//; s/ /, /g')"
 # shellcheck disable=SC2086
 allowlist_list="$(printf '%s ' $allowlist_times | sed 's/ $//; s/ /, /g')"
+# shellcheck disable=SC2086
+barrier_list="$(printf '%s ' $barrier_times | sed 's/ $//; s/ /, /g')"
+# shellcheck disable=SC2086
+cobackground_list="$(printf '%s ' $cobackground_times | sed 's/ $//; s/ /, /g')"
 
 echo
 echo "## Startup time: without vs with Spring Booster"
@@ -132,7 +167,11 @@ echo "| Baseline (sequential) | $baseline_list | $b_min | $b_med | $b_mean | $b_
 echo "| Boosted (parallel bootstrap) | $boosted_list | $x_min | $x_med | $x_mean | $x_max |"
 echo "| Boosted + shared-infra leaf | $sharedinfra_list | $s_min | $s_med | $s_mean | $s_max |"
 echo "| Boosted + per-bean allowlist | $allowlist_list | $a_min | $a_med | $a_mean | $a_max |"
+echo "| Boosted + named barrier | $barrier_list | $r_min | $r_med | $r_mean | $r_max |"
+echo "| Boosted + co-background group | $cobackground_list | $c_min | $c_med | $c_mean | $c_max |"
 echo
 echo "**Median difference (baseline − boosted): ${delta}s (${pct}%).**"
 echo "**Median difference (baseline − boosted+shared-infra): ${sdelta}s (${spct}%).**"
 echo "**Median difference (baseline − boosted+allowlist): ${adelta}s (${apct}%).**"
+echo "**Median difference (baseline − boosted+barrier): ${rdelta}s (${rpct}%).**"
+echo "**Median difference (baseline − boosted+co-background): ${cdelta}s (${cpct}%).**"

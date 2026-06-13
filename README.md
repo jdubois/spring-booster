@@ -224,6 +224,60 @@ selectively frees only the verified pure barrier consumers, so it works for `@Be
 consumers like Flyway/Liquibase on its own — you do **not** need to also enable
 `backgroundFactoryMethodBeans`.
 
+### Naming shared infrastructure as a barrier
+
+`backgroundSharedInfraConsumers` only recognises a shared singleton as a barrier when
+the framework *force-instantiates* it on the main thread (a `depends-on` target, factory
+bean, or configuration class). A `DataSource` exposed **only** as a co-located `@Bean`
+of a dynamic auto-configuration is not in that set, so its consumers stay serialized
+behind it. When you know such a bean is a completed, read-only leaf, name it as a
+barrier so its independent consumers can overlap:
+
+```java
+@EnableParallelBootstrap(barrierBeanNames = {"dataSource"})
+// or
+ParallelBootstrapSettings.builder()
+        .barrierBeanNames("dataSource")
+        .build();
+```
+
+A non-empty `barrierBeanNames` activates the completed-leaf relaxation on its own (you
+do **not** also need `backgroundSharedInfraConsumers`); when only the named list is set,
+structural auto-detection is skipped and just your named barriers are honoured. A named
+bean is honoured only while it remains an acyclic leaf with respect to the other
+background candidates, and only the *barrier → consumer* direction is exempted — a
+main-thread bean that genuinely depends on the named bean still pins it. An incorrect
+name is simply ignored, so the relaxation stays faithful to the "sequential when in
+doubt" design goal.
+
+### Declaring mutually independent heavyweights (co-background groups)
+
+The allowlist backgrounds individual `@Bean` beans but keeps any sync edges *between*
+them, so two co-located beans the static graph believes depend on one another are still
+serialized. When you know a set of heavyweight beans are mutually independent and may be
+built in parallel in any order, declare them as a co-background group:
+
+```java
+@EnableParallelBootstrap(coBackgroundGroups = {
+        @EnableParallelBootstrap.CoBackgroundGroup({"flyway", "searchIndex"}),
+        @EnableParallelBootstrap.CoBackgroundGroup({"cacheWarmer", "metricsBinder"})
+})
+// or
+ParallelBootstrapSettings.builder()
+        .coBackgroundGroup("flyway", "searchIndex")
+        .coBackgroundGroup("cacheWarmer", "metricsBinder")
+        .build();
+```
+
+For each group the planner drops each member's `@Configuration`→`@Bean` co-location
+edge (like the allowlist) **and** removes the sync edges *between* members, letting a
+member overlap a sibling it appeared to depend on. Only the sync-connectivity view is
+touched: forced `depends-on`/factory-bean edges between members are preserved and still
+ordered, cycle detection and layering are unaffected, and every member must still clear
+`isSafeCandidate` and the mainline-propagation pass. An incorrect independence assertion
+fails fast with `BeanCurrentlyInCreationException` and falls back to the sequential
+bootstrap.
+
 ## Requirements
 
 | | Version |

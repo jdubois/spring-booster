@@ -101,10 +101,10 @@ All code lives in a single package: `io.github.jdubois.springbooster`.
 
 | Class | Responsibility |
 |---|---|
-| `EnableParallelBootstrap` | Public opt-in annotation. `@Import`s the registrar. Carries tuning attributes (`enabled`, `poolSize`, `threadNamePrefix`, `backgroundBeanNames`, `backgroundFactoryMethodBeans`, `deferProviderEdges`, `backgroundSharedInfraConsumers`). |
+| `EnableParallelBootstrap` | Public opt-in annotation. `@Import`s the registrar. Carries tuning attributes (`enabled`, `poolSize`, `threadNamePrefix`, `backgroundBeanNames`, `backgroundFactoryMethodBeans`, `deferProviderEdges`, `backgroundSharedInfraConsumers`, `barrierBeanNames`, `coBackgroundGroups`). |
 | `ParallelBootstrapRegistrar` | `ImportBeanDefinitionRegistrar` activated by the annotation. Translates annotation attributes into `ParallelBootstrapSettings` and registers the post-processor as an infrastructure bean (idempotently). |
 | `ParallelBootstrapApplicationContextInitializer` | `ApplicationContextInitializer` entry point for programmatic / Spring Boot (`spring.factories`) registration, with no need for the annotation. |
-| `ParallelBootstrapSettings` | Immutable configuration (pool size, thread-name prefix, kill-switch, candidate `Predicate`, `backgroundBeanNames` allowlist, `backgroundFactoryMethodBeans`, `deferProviderEdges` and `backgroundSharedInfraConsumers` toggles). Built via a fluent `Builder`. Defines the per-bean opt-out and force-background attributes. |
+| `ParallelBootstrapSettings` | Immutable configuration (pool size, thread-name prefix, kill-switch, candidate `Predicate`, `backgroundBeanNames` allowlist, `backgroundFactoryMethodBeans`, `deferProviderEdges` and `backgroundSharedInfraConsumers` toggles, `barrierBeanNames` named completed-leaf barriers, `coBackgroundGroups` independence hints). Built via a fluent `Builder`. Defines the per-bean opt-out and force-background attributes. |
 | `BeanDependencyGraph` | Pure in-memory dependency graph of the bean definitions. Models both declared references **and** by-type autowiring edges (via `AutowiredEdgeResolver`), classifying each edge as *forced* or *sync* (and optionally *deferred*). Provides topological layering (Kahn) and cycle detection (Tarjan). Never triggers bean creation. |
 | `DynamicConfigurationDetector` | Statically classifies each `@Configuration`/factory bean as *dynamic* (capable of invisible by-type lookups — full `@Configuration`, `Aware`/`*Configurer`/`*Customizer`, or captured context / provider / `@Lazy` members) or *pure*. If any configuration in the context is dynamic, co-location edges (§5.2.1) are added for **every** factory-method bean; if none is, they are dropped entirely. |
 | `AutowiredEdgeResolver` | Reflectively resolves the by-type / `@Autowired` / `ObjectProvider` dependency edges that the declarations do not reveal (`@Bean` method params, autowired constructors, `@Autowired` fields/methods), unwrapping `ObjectProvider`/`ObjectFactory`/`Provider`/`Optional`/collections/maps/arrays. Resolves candidate names with eager init disabled, so it never instantiates a bean. |
@@ -438,6 +438,65 @@ counterpart of `backgroundFactoryMethodBeans` for the realistic win identified i
 BootUI benchmark: overlapping a known-independent heavyweight `@Bean` (such as Spring
 Security) with the JPA/migration stack.
 
+#### 5.2.5 Named completed-leaf barriers (`barrierBeanNames`)
+
+The structural barrier predicate of §5.2.3 only recognises a bean as a completed-leaf
+barrier when it is **force-instantiated on the main thread** — a factory bean, a
+`depends-on` target, or a configuration class. A shared infrastructure singleton that is
+exposed *only* as a co-located `@Bean` (for example a `DataSource` produced by a
+dynamic auto-configuration, with no `depends-on` pointing at it) is co-located on the
+main thread, yet it is **not** in the forced-mainline set, so the predicate never treats
+it as a barrier and its independent `@Bean` consumers (Flyway, Liquibase, …) stay
+serialized behind it.
+
+The opt-in **named-barrier** override closes that gap. Naming a bean through
+`ParallelBootstrapSettings.barrierBeanNames(...)` /
+`@EnableParallelBootstrap(barrierBeanNames = {...})` asserts that it is a completed-leaf
+barrier even though it is not force-instantiated. For each named bean the planner
+(`applySharedInfraRelaxation`, step 1) pins it to the main thread (`eligible.remove`) and
+adds it to the barrier set **only when it is still safe**: it must be acyclic and a true
+leaf with respect to the *other* background candidates (treating the named cohort as
+mainline). The remaining relaxation then proceeds exactly as in §5.2.3 — only the
+**barrier → dependent** direction is exempted, so a main-thread bean that *depends on* a
+named bean still pins it, and consumers whose every sync dependency is a barrier (named
+or structural) overlap on background threads.
+
+A non-empty `barrierBeanNames` activates the completed-leaf relaxation on its own, even
+when `backgroundSharedInfraConsumers` is `false`; in that case **only** user-named
+barriers are honoured and structural auto-detection is skipped (`autoDetect = false`).
+Setting both flags combines the two barrier sources. As with every other relaxation the
+override only ever *removes* propagation — never adds edges — so cycle detection, layering
+and the `BeanCurrentlyInCreationException` fast-fail backstop are untouched (design
+goal #1): a named bean that turns out not to be an acyclic leaf is simply ignored.
+
+#### 5.2.6 Co-background group hint (`coBackgroundGroups`)
+
+The allowlist of §5.2.4 backgrounds individual `@Bean` beans but keeps them ordered by
+their mutual sync edges, so two co-located `@Bean` beans that the planner believes depend
+on one another are still serialized. When the application *knows* that a set of
+heavyweight beans are mutually independent — they may be constructed in any order and in
+parallel — it can declare them as a **co-background group** through
+`ParallelBootstrapSettings.coBackgroundGroup(...)` /
+`.coBackgroundGroups(...)` or
+`@EnableParallelBootstrap(coBackgroundGroups = {@CoBackgroundGroup({...}), ...})`.
+
+For each group the planner (`applyCoBackgroundGroups`, run right after the allowlist)
+does two things: it drops each member's configuration→`@Bean` co-location edge (exactly
+like the allowlist, so each member may background while the rest of the context stays
+co-located), **and** it removes the sync edges *between* members in both directions. The
+inter-member edge removal is the distinguishing behaviour: it lets a member overlap a
+sibling that the static graph thought it depended on, which the per-bean allowlist alone
+cannot do.
+
+The hint only mutates the **sync-connectivity view**; it never touches the forced
+`dependencies`/`edges` graph. So `depends-on` and factory-bean references between members
+are preserved and still force-ordered, cycle detection and topological layering are
+unaffected, and every member must still pass `isSafeCandidate` and the
+`propagateMainline` pass. A member that is genuinely pinned to the main thread by a
+forced edge or by an external main-thread consumer stays mainline, and an incorrect
+independence assertion still fails fast with `BeanCurrentlyInCreationException` rather
+than producing wrong results (design goal #1).
+
 ### 5.3 Consequences
 
 * All **declaration-level** relationships are now modelled and made safe: explicit
@@ -454,7 +513,9 @@ Security) with the JPA/migration stack.
   `backgroundFactoryMethodBeans`, `deferProviderEdges`, and/or
   `backgroundSharedInfraConsumers` for more parallelism where they know it is safe, or
   name specific `@Bean` beans through `backgroundBeanNames` / `FORCE_BACKGROUND_ATTRIBUTE`
-  (§5.2.4) to background just those.
+  (§5.2.4) to background just those, name shared infrastructure singletons as
+  `barrierBeanNames` (§5.2.5) to let their consumers overlap, or declare mutually
+  independent heavyweights as `coBackgroundGroups` (§5.2.6).
 * **Narrow residual blind spot.** A bean that is *not* a factory-method bean (a
   component or plain definition) could still be pulled by type through a **direct
   `getBean(...)` from inside another bean's initialization code**. This is rare and

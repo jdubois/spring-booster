@@ -36,11 +36,12 @@ new file mode 100644
 index 0000000..7f1237e
 --- /dev/null
 +++ b/bootui-sample-app/src/main/java/io/github/jdubois/bootui/sample/SampleParallelBootstrapInitializer.java
-@@ -0,0 +1,55 @@
+@@ -0,0 +1,75 @@
 +package io.github.jdubois.bootui.sample;
 +
 +import io.github.jdubois.springbooster.ParallelBootstrapBeanFactoryPostProcessor;
 +import io.github.jdubois.springbooster.ParallelBootstrapSettings;
++import java.util.ArrayList;
 +import java.util.List;
 +import org.springframework.context.ApplicationContextInitializer;
 +import org.springframework.context.ConfigurableApplicationContext;
@@ -84,10 +85,29 @@ index 0000000..7f1237e
 +        // backgroundFactoryMethodBeans. Pass a comma-separated list via sample.background-bean-names.
 +        List<String> backgroundBeanNames = List.of(
 +                StringUtils.commaDelimitedListToStringArray(environment.getProperty("sample.background-bean-names", "")));
++        // Fifth benchmark variant: name a shared infrastructure singleton that is exposed only
++        // as a co-located @Bean (so the structural barrier predicate cannot detect it) as a
++        // completed-leaf barrier, letting its independent consumers overlap. Self-contained: a
++        // non-empty barrier list activates the completed-leaf relaxation on its own.
++        List<String> barrierBeanNames = List.of(
++                StringUtils.commaDelimitedListToStringArray(environment.getProperty("sample.barrier-bean-names", "")));
++        // Sixth benchmark variant: declare mutually-independent heavyweight @Bean beans as
++        // co-background groups so the planner drops their co-location AND the sync edges between
++        // members. Groups are separated by ';', members within a group by ','.
++        List<List<String>> coBackgroundGroups = new ArrayList<>();
++        for (String group : StringUtils.delimitedListToStringArray(
++                environment.getProperty("sample.co-background-groups", ""), ";")) {
++            String[] members = StringUtils.commaDelimitedListToStringArray(group);
++            if (members.length > 0) {
++                coBackgroundGroups.add(List.of(members));
++            }
++        }
 +        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
 +                .threadNamePrefix("sample-boot-")
 +                .backgroundSharedInfraConsumers(sharedInfra)
 +                .backgroundBeanNames(backgroundBeanNames)
++                .barrierBeanNames(barrierBeanNames)
++                .coBackgroundGroups(coBackgroundGroups)
 +                .build();
 +        applicationContext.addBeanFactoryPostProcessor(new ParallelBootstrapBeanFactoryPostProcessor(settings));
 +    }

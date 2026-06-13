@@ -33,14 +33,18 @@ the two distributions did not even overlap (baseline max 9.928 s < boosted min
 reproduce on your own machine; absolute numbers and the size of the delta will
 vary.)
 
-> **New: two extra variants** beyond baseline and boosted. *Boosted + shared-infra
+> **New: four extra variants** beyond baseline and boosted. *Boosted + shared-infra
 > leaf* enables the `backgroundSharedInfraConsumers` relaxation so two independent
 > migration engines (Flyway + Liquibase) over a shared `DataSource` can overlap when
 > the shared leaf is a forced-mainline barrier. *Boosted + per-bean allowlist* names
 > specific heavyweight `@Bean` beans (e.g. Spring Security's filter chain) so they may
-> background while every other `@Bean` stays on the main thread. The numbers above
-> predate both; `./run-benchmark.sh` now measures all four variants, and the goal of
-> the extra ones is to recover the regression above into a net win. See
+> background while every other `@Bean` stays on the main thread. *Boosted + named
+> barrier* names the shared `DataSource` (exposed only as a co-located `@Bean`, so the
+> structural predicate misses it) so its consumers overlap. *Boosted + co-background
+> group* asserts the two migrators are mutually independent so the planner also drops the
+> sync edges between them. The numbers above predate all four; `./run-benchmark.sh` now
+> measures all six variants, and the goal of the extra ones is to recover the regression
+> above into a net win. See
 > [Backgrounding the shared-infra consumers](#backgrounding-the-shared-infra-consumers)
 > and [Backgrounding specific beans with an allowlist](#backgrounding-specific-beans-with-an-allowlist).
 ## Layout
@@ -50,7 +54,7 @@ vary.)
 | `setup.sh` | Installs `spring-booster` to `~/.m2`, clones BootUI at a pinned commit, applies the patch, builds the `bootui-sample-app` jar (sample module only; BootUI deps come from Maven Central). |
 | `bootui-spring-booster.patch` | The exact Spring Booster integration changes applied to the sample app. |
 | `measure.sh` | Runs a jar N times and prints each reported "Started … in X seconds" value. |
-| `run-benchmark.sh` | Runs the four variants — baseline, boosted, boosted + shared-infra leaf, and boosted + per-bean allowlist (plus a warm-up each) — and prints the comparison table. |
+| `run-benchmark.sh` | Runs the six variants — baseline, boosted, boosted + shared-infra leaf, boosted + per-bean allowlist, boosted + named barrier, and boosted + co-background group (plus a warm-up each) — and prints the comparison table. |
 | `boot-ui/` | The cloned + patched BootUI checkout (git-ignored; created by `setup.sh`). |
 
 ## How to run
@@ -83,6 +87,17 @@ comparison is apples-to-apples (identical classpath, profile, and artifact).
   names specific heavyweight `@Bean` beans the user asserts are safe to background, so
   they may run on background threads even though the dynamic auto-configurations keep
   every *other* `@Bean` bean on the main thread (see [Backgrounding specific beans with an allowlist](#backgrounding-specific-beans-with-an-allowlist)).
+* **Boosted + named barrier** — run with `--sample.parallel-bootstrap=true
+  --sample.barrier-bean-names=dataSource`. The shared `DataSource` is exposed only as a
+  co-located `@Bean` of a dynamic auto-configuration, so the structural barrier predicate
+  cannot detect it; naming it pins it to the main thread and lets its independent
+  consumers (Flyway + Liquibase) overlap on background threads. Unlike the shared-infra
+  variant this works even when the shared leaf is *not* a forced-mainline `depends-on`
+  target.
+* **Boosted + co-background group** — run with `--sample.parallel-bootstrap=true
+  --sample.co-background-groups=flyway,liquibase`. This asserts that the two migration
+  engines are mutually independent, so the planner drops both their co-location *and* the
+  sync edges between them, letting each overlap a sibling it appeared to depend on.
 
 Startup time is taken from Spring Boot's own
 `Started BootUiSampleApplication in X seconds` log line. Each variant runs one

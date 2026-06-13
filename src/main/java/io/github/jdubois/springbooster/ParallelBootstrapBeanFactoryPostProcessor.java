@@ -207,10 +207,9 @@ public class ParallelBootstrapBeanFactoryPostProcessor
         // BeanCurrentlyInCreationException. Naming completed-leaf barriers
         // (barrierBeanNames) activates the same relaxation for the named beans, so it too
         // requires co-location to stay active.
-        boolean relaxSharedInfra =
-                this.settings.isBackgroundSharedInfraConsumers() || !this.settings.getBarrierBeanNames().isEmpty();
-        boolean colocateFactoryMethodBeans =
-                !this.settings.isBackgroundFactoryMethodBeans() || relaxSharedInfra;
+        boolean relaxSharedInfra = this.settings.isBackgroundSharedInfraConsumers()
+                || !this.settings.getBarrierBeanNames().isEmpty();
+        boolean colocateFactoryMethodBeans = !this.settings.isBackgroundFactoryMethodBeans() || relaxSharedInfra;
         BeanDependencyGraph graph = BeanDependencyGraph.build(
                 beanFactory, allNames, colocateFactoryMethodBeans, this.settings.isDeferProviderEdges());
 
