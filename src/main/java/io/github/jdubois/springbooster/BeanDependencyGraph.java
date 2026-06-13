@@ -127,19 +127,48 @@ final class BeanDependencyGraph {
             ConfigurableListableBeanFactory beanFactory,
             Collection<String> beanNames,
             boolean colocateFactoryMethodBeans) {
+        return build(beanFactory, beanNames, colocateFactoryMethodBeans, false);
+    }
+
+    /**
+     * Build a dependency graph from the given bean factory, restricted to the
+     * supplied set of bean names (typically all registered bean definitions). Edges
+     * that point to beans outside the supplied set are ignored.
+     * @param beanFactory the bean factory to introspect
+     * @param beanNames the bean names to include as graph nodes
+     * @param colocateFactoryMethodBeans whether to add factory&rarr;bean co-location
+     * edges that keep every {@code @Bean} bean on its configuration's thread (see
+     * {@link #addFactoryColocationEdges})
+     * @param deferProviderEdges whether by-type edges reached only through an
+     * {@code ObjectProvider}/{@code ObjectFactory}/{@code Provider} wrapper or a
+     * {@code @Lazy} injection point are treated as <em>deferred</em> &mdash; kept in the
+     * full dependency set (for cycle detection and layering) but excluded from the
+     * <em>sync</em> connectivity view, so they no longer constrain the
+     * background/mainline boundary
+     * @return the resulting dependency graph
+     */
+    static BeanDependencyGraph build(
+            ConfigurableListableBeanFactory beanFactory,
+            Collection<String> beanNames,
+            boolean colocateFactoryMethodBeans,
+            boolean deferProviderEdges) {
         Set<String> nodes = new LinkedHashSet<>(beanNames);
         Map<String, Set<String>> dependencies = new HashMap<>(nodes.size());
         Map<String, Set<String>> syncDependencies = new HashMap<>(nodes.size());
         for (String beanName : nodes) {
             Set<String> edges = new LinkedHashSet<>();
             Set<String> syncEdges = new LinkedHashSet<>();
+            Set<String> deferredEdges = new LinkedHashSet<>();
             BeanDefinition mbd = safeGetMergedBeanDefinition(beanFactory, beanName);
             if (mbd != null) {
                 collectEdges(mbd, edges, syncEdges);
                 // By-type / @Autowired / ObjectProvider edges the declarations do not reveal.
-                AutowiredEdgeResolver.collect(beanFactory, beanName, mbd, syncEdges);
+                AutowiredEdgeResolver.collect(beanFactory, beanName, mbd, syncEdges, deferredEdges, deferProviderEdges);
             }
             edges.addAll(syncEdges);
+            // Deferred edges remain genuine construction dependencies for cycle detection
+            // and layering, but are excluded from the sync connectivity boundary below.
+            edges.addAll(deferredEdges);
             // Keep only edges that point to known nodes; self-references are retained
             // so that cycle detection can flag them.
             edges.retainAll(nodes);

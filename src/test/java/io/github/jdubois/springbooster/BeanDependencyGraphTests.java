@@ -187,6 +187,45 @@ class BeanDependencyGraphTests {
     }
 
     @Test
+    void objectProviderEdgeIsExcludedFromSyncWhenDeferred() {
+        register("leaf", Leaf.class);
+        register("consumer", ProviderConsumer.class);
+
+        BeanDependencyGraph graph =
+                BeanDependencyGraph.build(this.beanFactory, List.of("leaf", "consumer"), true, true);
+
+        // With deferral enabled the provider edge is no longer a sync (boundary) edge,
+        // but it is still a genuine construction dependency for cycle/layering.
+        assertThat(graph.getSyncDependencies("consumer")).doesNotContain("leaf");
+        assertThat(graph.getDependencies("consumer")).contains("leaf");
+    }
+
+    @Test
+    void directByTypeEdgeRemainsSyncWhenDeferralEnabled() {
+        register("leaf", Leaf.class);
+        register("consumer", ConstructorConsumer.class);
+
+        BeanDependencyGraph graph =
+                BeanDependencyGraph.build(this.beanFactory, List.of("leaf", "consumer"), true, true);
+
+        // A direct (non-provider, non-lazy) by-type dependency is still resolved during
+        // construction, so it stays a sync edge even when deferral is enabled.
+        assertThat(graph.getSyncDependencies("consumer")).contains("leaf");
+    }
+
+    @Test
+    void lazyFieldEdgeIsExcludedFromSyncWhenDeferred() {
+        register("leaf", Leaf.class);
+        register("consumer", LazyFieldConsumer.class);
+
+        BeanDependencyGraph graph =
+                BeanDependencyGraph.build(this.beanFactory, List.of("leaf", "consumer"), true, true);
+
+        assertThat(graph.getSyncDependencies("consumer")).doesNotContain("leaf");
+        assertThat(graph.getDependencies("consumer")).contains("leaf");
+    }
+
+    @Test
     void collectionInjectionProducesEdge() {
         register("leaf", Leaf.class);
         register("consumer", CollectionConsumer.class);
@@ -306,6 +345,13 @@ class BeanDependencyGraphTests {
 
         @Autowired
         ObjectProvider<Leaf> leaf;
+    }
+
+    static class LazyFieldConsumer {
+
+        @Autowired
+        @org.springframework.context.annotation.Lazy
+        Leaf leaf;
     }
 
     static class CollectionConsumer {

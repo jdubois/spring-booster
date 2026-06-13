@@ -149,6 +149,24 @@ class ParallelBootstrapBeanFactoryPostProcessorTests {
     }
 
     @Test
+    void backgroundsBeanPulledViaObjectProviderWhenProviderEdgesAreDeferred() {
+        this.beanFactory.registerBeanDefinition("leaf", new RootBeanDefinition(Leaf.class));
+        this.beanFactory.registerBeanDefinition("consumer", new RootBeanDefinition(ProviderConsumer.class));
+        // "consumer" stays on the main thread but reaches "leaf" only through an
+        // ObjectProvider. With provider edges deferred, that edge no longer crosses the
+        // boundary, so "leaf" is free to be backgrounded.
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                .candidateFilter(name -> name.equals("leaf"))
+                .deferProviderEdges(true)
+                .build();
+
+        List<String> candidates =
+                new ParallelBootstrapBeanFactoryPostProcessor(settings).planCandidates(this.beanFactory);
+
+        assertThat(candidates).containsExactly("leaf");
+    }
+
+    @Test
     void backgroundsByTypeConnectedBeansWhenAllAreEligible() {
         this.beanFactory.registerBeanDefinition("leaf", new RootBeanDefinition(Leaf.class));
         this.beanFactory.registerBeanDefinition("consumer", new RootBeanDefinition(ConstructorConsumer.class));

@@ -76,32 +76,62 @@ final class AutowiredEdgeResolver {
     /** Wrapper types whose single generic argument is the real injection target. */
     private static final Set<Class<?>> WRAPPER_TYPES = wrapperTypes();
 
+    /**
+     * Wrapper types that defer resolution of their target to <em>after</em> the
+     * dependent bean is constructed ({@link ObjectProvider}, {@link ObjectFactory},
+     * {@code jakarta/javax.inject.Provider}). Unlike {@link Optional}, these never force
+     * the target to be created while the dependent is being wired, so the edges they
+     * produce can be classified as <em>deferred</em>.
+     */
+    private static final Set<Class<?>> DEFERRED_WRAPPER_TYPES = deferredWrapperTypes();
+
+    /** The {@code @Lazy} annotation, which likewise defers resolution to a proxy. */
+    private static final @Nullable Class<? extends Annotation> LAZY_ANNOTATION = lazyAnnotation();
+
     private AutowiredEdgeResolver() {}
 
     /**
-     * Collect the by-type dependency edges of the given bean and add the resolved
-     * target bean names to {@code edges}. Self-references are never added.
+     * Collect the by-type dependency edges of the given bean, partitioning them into
+     * <em>sync</em> and <em>deferred</em> edges.
+     *
+     * <p>A <em>deferred</em> edge is one whose target is reached only through an
+     * {@link ObjectProvider}/{@link ObjectFactory}/{@code Provider} wrapper or a
+     * {@code @Lazy} injection point, i.e. it is not resolved while the dependent bean is
+     * being constructed. When {@code separateDeferred} is {@code false} every edge is
+     * added to {@code syncEdges} (preserving the original, fully-conservative behaviour);
+     * when {@code true}, deferred edges are routed to {@code deferredEdges} instead so the
+     * planner can let them cross the background/mainline boundary.
+     *
+     * <p>Self-references are never added.
      * @param beanFactory the bean factory to introspect
      * @param beanName the bean whose injection points are analysed
      * @param mbd the merged bean definition of {@code beanName}
-     * @param edges the set to populate with resolved dependency bean names
+     * @param syncEdges the set to populate with resolved sync dependency bean names
+     * @param deferredEdges the set to populate with resolved deferred dependency bean names
+     * @param separateDeferred whether to route deferred edges to {@code deferredEdges}
      */
     static void collect(
-            ConfigurableListableBeanFactory beanFactory, String beanName, BeanDefinition mbd, Set<String> edges) {
+            ConfigurableListableBeanFactory beanFactory,
+            String beanName,
+            BeanDefinition mbd,
+            Set<String> syncEdges,
+            Set<String> deferredEdges,
+            boolean separateDeferred) {
         try {
             Class<?> beanType = safeGetType(beanFactory, beanName);
             if (isFactoryMethodBean(mbd)) {
                 for (Method factoryMethod : findFactoryMethods(beanFactory, mbd)) {
-                    addExecutableEdges(beanFactory, factoryMethod, beanName, edges);
+                    addExecutableEdges(
+                            beanFactory, factoryMethod, beanName, syncEdges, deferredEdges, separateDeferred);
                 }
             } else if (beanType != null) {
                 Constructor<?> constructor = chooseAutowireConstructor(beanType);
                 if (constructor != null) {
-                    addExecutableEdges(beanFactory, constructor, beanName, edges);
+                    addExecutableEdges(beanFactory, constructor, beanName, syncEdges, deferredEdges, separateDeferred);
                 }
             }
             if (beanType != null) {
-                addMemberInjectionEdges(beanFactory, beanType, beanName, edges);
+                addMemberInjectionEdges(beanFactory, beanType, beanName, syncEdges, deferredEdges, separateDeferred);
             }
         } catch (Throwable ex) {
             // Best-effort analysis: never let introspection break graph construction.
@@ -174,18 +204,30 @@ final class AutowiredEdgeResolver {
     }
 
     private static void addMemberInjectionEdges(
-            ConfigurableListableBeanFactory beanFactory, Class<?> beanType, String beanName, Set<String> edges) {
+            ConfigurableListableBeanFactory beanFactory,
+            Class<?> beanType,
+            String beanName,
+            Set<String> syncEdges,
+            Set<String> deferredEdges,
+            boolean separateDeferred) {
         Class<?> current = beanType;
         while (current != null && current != Object.class) {
             try {
                 for (Field field : current.getDeclaredFields()) {
                     if (hasInjectAnnotation(field) && !hasValueAnnotation(field)) {
-                        addCandidatesForType(beanFactory, ResolvableType.forField(field), beanName, edges);
+                        addCandidatesForType(
+                                beanFactory,
+                                ResolvableType.forField(field),
+                                beanName,
+                                syncEdges,
+                                deferredEdges,
+                                separateDeferred,
+                                isLazy(field));
                     }
                 }
                 for (Method method : current.getDeclaredMethods()) {
                     if (hasInjectAnnotation(method)) {
-                        addExecutableEdges(beanFactory, method, beanName, edges);
+                        addExecutableEdges(beanFactory, method, beanName, syncEdges, deferredEdges, separateDeferred);
                     }
                 }
             } catch (Throwable ex) {
@@ -196,14 +238,26 @@ final class AutowiredEdgeResolver {
     }
 
     private static void addExecutableEdges(
-            ConfigurableListableBeanFactory beanFactory, Executable executable, String beanName, Set<String> edges) {
+            ConfigurableListableBeanFactory beanFactory,
+            Executable executable,
+            String beanName,
+            Set<String> syncEdges,
+            Set<String> deferredEdges,
+            boolean separateDeferred) {
         for (int i = 0; i < executable.getParameterCount(); i++) {
             if (hasValueAnnotation(executable.getParameters()[i])) {
                 continue;
             }
             MethodParameter parameter = forExecutable(executable, i);
             if (parameter != null) {
-                addCandidatesForType(beanFactory, ResolvableType.forMethodParameter(parameter), beanName, edges);
+                addCandidatesForType(
+                        beanFactory,
+                        ResolvableType.forMethodParameter(parameter),
+                        beanName,
+                        syncEdges,
+                        deferredEdges,
+                        separateDeferred,
+                        isLazy(executable.getParameters()[i]));
             }
         }
     }
@@ -219,7 +273,13 @@ final class AutowiredEdgeResolver {
     }
 
     private static void addCandidatesForType(
-            ConfigurableListableBeanFactory beanFactory, ResolvableType type, String beanName, Set<String> edges) {
+            ConfigurableListableBeanFactory beanFactory,
+            ResolvableType type,
+            String beanName,
+            Set<String> syncEdges,
+            Set<String> deferredEdges,
+            boolean separateDeferred,
+            boolean deferred) {
         if (type == ResolvableType.NONE) {
             return;
         }
@@ -228,28 +288,58 @@ final class AutowiredEdgeResolver {
             return;
         }
         if (WRAPPER_TYPES.contains(resolved)) {
-            addCandidatesForType(beanFactory, type.getGeneric(0), beanName, edges);
+            boolean nextDeferred = deferred || DEFERRED_WRAPPER_TYPES.contains(resolved);
+            addCandidatesForType(
+                    beanFactory,
+                    type.getGeneric(0),
+                    beanName,
+                    syncEdges,
+                    deferredEdges,
+                    separateDeferred,
+                    nextDeferred);
             return;
         }
         if (resolved.isArray()) {
-            addCandidatesForType(beanFactory, type.getComponentType(), beanName, edges);
+            addCandidatesForType(
+                    beanFactory,
+                    type.getComponentType(),
+                    beanName,
+                    syncEdges,
+                    deferredEdges,
+                    separateDeferred,
+                    deferred);
             return;
         }
         if (Collection.class.isAssignableFrom(resolved)) {
-            addCandidatesForType(beanFactory, type.asCollection().getGeneric(0), beanName, edges);
+            addCandidatesForType(
+                    beanFactory,
+                    type.asCollection().getGeneric(0),
+                    beanName,
+                    syncEdges,
+                    deferredEdges,
+                    separateDeferred,
+                    deferred);
             return;
         }
         if (Map.class.isAssignableFrom(resolved)) {
-            addCandidatesForType(beanFactory, type.asMap().getGeneric(1), beanName, edges);
+            addCandidatesForType(
+                    beanFactory,
+                    type.asMap().getGeneric(1),
+                    beanName,
+                    syncEdges,
+                    deferredEdges,
+                    separateDeferred,
+                    deferred);
             return;
         }
         if (isUnresolvableTargetType(resolved)) {
             return;
         }
+        Set<String> sink = (separateDeferred && deferred) ? deferredEdges : syncEdges;
         try {
             for (String candidate : beanFactory.getBeanNamesForType(type, true, false)) {
                 if (!candidate.equals(beanName)) {
-                    edges.add(candidate);
+                    sink.add(candidate);
                 }
             }
         } catch (Throwable ex) {
@@ -272,6 +362,10 @@ final class AutowiredEdgeResolver {
 
     private static boolean hasValueAnnotation(java.lang.reflect.AnnotatedElement element) {
         return AnnotatedElementUtils.hasAnnotation(element, Value.class);
+    }
+
+    private static boolean isLazy(java.lang.reflect.AnnotatedElement element) {
+        return LAZY_ANNOTATION != null && AnnotatedElementUtils.hasAnnotation(element, LAZY_ANNOTATION);
     }
 
     private static @Nullable Class<?> safeGetType(ConfigurableListableBeanFactory beanFactory, String beanName) {
@@ -312,6 +406,29 @@ final class AutowiredEdgeResolver {
         addOptionalClass(types, "jakarta.inject.Provider");
         addOptionalClass(types, "javax.inject.Provider");
         return Set.copyOf(types);
+    }
+
+    private static Set<Class<?>> deferredWrapperTypes() {
+        Set<Class<?>> types = new LinkedHashSet<>();
+        types.add(ObjectProvider.class);
+        types.add(ObjectFactory.class);
+        addOptionalClass(types, "jakarta.inject.Provider");
+        addOptionalClass(types, "javax.inject.Provider");
+        return Set.copyOf(types);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static @Nullable Class<? extends Annotation> lazyAnnotation() {
+        try {
+            Class<?> type = ClassUtils.forName(
+                    "org.springframework.context.annotation.Lazy", AutowiredEdgeResolver.class.getClassLoader());
+            if (type.isAnnotation()) {
+                return (Class<? extends Annotation>) type;
+            }
+        } catch (Throwable ex) {
+            // Lazy not on the classpath; ignore.
+        }
+        return null;
     }
 
     private static void addOptionalClass(Set<Class<?>> target, String className) {

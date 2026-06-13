@@ -52,18 +52,22 @@ public final class ParallelBootstrapSettings {
 
     private final boolean backgroundFactoryMethodBeans;
 
+    private final boolean deferProviderEdges;
+
     private ParallelBootstrapSettings(
             boolean enabled,
             int poolSize,
             String threadNamePrefix,
             Predicate<String> candidateFilter,
-            boolean backgroundFactoryMethodBeans) {
+            boolean backgroundFactoryMethodBeans,
+            boolean deferProviderEdges) {
 
         this.enabled = enabled;
         this.poolSize = poolSize;
         this.threadNamePrefix = threadNamePrefix;
         this.candidateFilter = candidateFilter;
         this.backgroundFactoryMethodBeans = backgroundFactoryMethodBeans;
+        this.deferProviderEdges = deferProviderEdges;
     }
 
     /**
@@ -125,6 +129,33 @@ public final class ParallelBootstrapSettings {
     }
 
     /**
+     * Whether by-type dependency edges reached only through an {@code ObjectProvider},
+     * {@code ObjectFactory} or {@code Provider} wrapper, or through a {@code @Lazy}
+     * injection point, are treated as <em>deferred</em>.
+     * <p>Defaults to {@code false}. A deferred dependency is not resolved while the
+     * dependent bean is being constructed, so &mdash; unlike an ordinary <em>sync</em>
+     * dependency &mdash; it does not force the dependent and the dependency onto the same
+     * thread. When this is enabled, such edges are excluded from the connectivity-safe
+     * boundary, so a main-thread bean that depends on a background subtree <em>only</em>
+     * through a provider or {@code @Lazy} no longer drags that subtree onto the main
+     * thread, letting larger chunks be backgrounded.
+     * <p>This is opt-in because the relaxation is sound only if the provider/{@code @Lazy}
+     * handle is dereferenced <em>after</em> the dependent bean has been constructed. A
+     * bean that eagerly dereferences a provider inside its constructor or an
+     * initialization callback (for example a framework callback such as
+     * {@code WebMvcConfigurer.addArgumentResolvers}) would request a background bean from
+     * the main thread and fail with {@code BeanCurrentlyInCreationException}. Enable it
+     * only when you know your provider/{@code @Lazy} dependencies are resolved lazily, and
+     * pair it with a {@link #getCandidateFilter() candidate filter} or the
+     * {@link #OPT_OUT_ATTRIBUTE opt-out attribute} for any bean that does not fit that
+     * pattern.
+     * @return whether provider / {@code @Lazy} edges are treated as deferred
+     */
+    public boolean isDeferProviderEdges() {
+        return this.deferProviderEdges;
+    }
+
+    /**
      * Create settings with sensible defaults: enabled, a pool size of twice the
      * number of available processors, the {@code parallel-bootstrap-} thread prefix,
      * and a candidate filter that accepts every bean.
@@ -179,6 +210,8 @@ public final class ParallelBootstrapSettings {
         private Predicate<String> candidateFilter = beanName -> true;
 
         private boolean backgroundFactoryMethodBeans = false;
+
+        private boolean deferProviderEdges = false;
 
         private Builder() {}
 
@@ -244,6 +277,23 @@ public final class ParallelBootstrapSettings {
         }
 
         /**
+         * Set whether by-type edges reached only through an {@code ObjectProvider},
+         * {@code ObjectFactory} or {@code Provider} wrapper, or through a {@code @Lazy}
+         * injection point, are treated as <em>deferred</em> and therefore excluded from
+         * the connectivity-safe boundary. Defaults to {@code false}. Enabling this lets a
+         * main-thread bean depend on a background subtree purely through a provider /
+         * {@code @Lazy} without dragging that subtree onto the main thread, at the cost of
+         * assuming such handles are dereferenced lazily (after construction).
+         * @param deferProviderEdges whether provider / {@code @Lazy} edges are deferred
+         * @return this builder
+         * @see ParallelBootstrapSettings#isDeferProviderEdges()
+         */
+        public Builder deferProviderEdges(boolean deferProviderEdges) {
+            this.deferProviderEdges = deferProviderEdges;
+            return this;
+        }
+
+        /**
          * Build the immutable {@link ParallelBootstrapSettings} instance.
          * @return the immutable settings instance
          */
@@ -253,7 +303,8 @@ public final class ParallelBootstrapSettings {
                     this.poolSize,
                     this.threadNamePrefix,
                     this.candidateFilter,
-                    this.backgroundFactoryMethodBeans);
+                    this.backgroundFactoryMethodBeans,
+                    this.deferProviderEdges);
         }
     }
 }

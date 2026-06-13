@@ -183,8 +183,11 @@ public class ParallelBootstrapBeanFactoryPostProcessor
         // caller has opted in to backgrounding factory-method beans, co-locate every
         // @Bean bean with its configuration class so the bootstrap stays safe against the
         // dynamic, by-type lookups that configuration classes perform on the main thread.
-        BeanDependencyGraph graph =
-                BeanDependencyGraph.build(beanFactory, allNames, !this.settings.isBackgroundFactoryMethodBeans());
+        BeanDependencyGraph graph = BeanDependencyGraph.build(
+                beanFactory,
+                allNames,
+                !this.settings.isBackgroundFactoryMethodBeans(),
+                this.settings.isDeferProviderEdges());
         Set<String> cyclic = graph.beansInCycles();
         Set<String> forcedMainline = collectForcedMainlineBeans(beanFactory);
 

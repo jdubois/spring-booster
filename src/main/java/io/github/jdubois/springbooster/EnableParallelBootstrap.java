@@ -93,4 +93,17 @@ public @interface EnableParallelBootstrap {
      * @see ParallelBootstrapSettings#isBackgroundFactoryMethodBeans()
      */
     boolean backgroundFactoryMethodBeans() default false;
+
+    /**
+     * Whether by-type dependency edges reached only through an {@code ObjectProvider},
+     * {@code ObjectFactory} or {@code Provider} wrapper, or through a {@code @Lazy}
+     * injection point, are treated as <em>deferred</em> and excluded from the
+     * connectivity-safe boundary. Defaults to {@code false}. Enabling this lets a
+     * main-thread bean depend on a background subtree purely through a provider /
+     * {@code @Lazy} without dragging that subtree onto the main thread, at the cost of
+     * assuming such handles are dereferenced lazily (after construction).
+     * @return whether provider / {@code @Lazy} edges are deferred
+     * @see ParallelBootstrapSettings#isDeferProviderEdges()
+     */
+    boolean deferProviderEdges() default false;
 }

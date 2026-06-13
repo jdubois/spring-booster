@@ -157,6 +157,28 @@ class ParallelBootstrapIntegrationTests {
         }
     }
 
+    @Test
+    void deferredProviderEdgeLetsMainlineConsumerBackgroundItsProvidedBean() {
+        ProviderHolder.providedLeaf = null;
+        DeferredLeaf.creationThreads.clear();
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            ParallelBootstrapSettings settings =
+                    ParallelBootstrapSettings.builder().deferProviderEdges(true).build();
+            new ParallelBootstrapApplicationContextInitializer(settings).initialize(context);
+            // "holder" is a SmartInitializingSingleton, so it is infrastructure and stays
+            // on the main thread. It reaches "leaf" only through an ObjectProvider it
+            // dereferences after the singletons have been instantiated, so with provider
+            // edges deferred "leaf" can be backgrounded without a creation exception.
+            context.registerBeanDefinition("holder", new RootBeanDefinition(ProviderHolder.class));
+            context.registerBeanDefinition("leaf", new RootBeanDefinition(DeferredLeaf.class));
+            context.refresh();
+
+            assertThat(context.getBean(DeferredLeaf.class)).isNotNull();
+            assertThat(ProviderHolder.providedLeaf).isSameAs(context.getBean(DeferredLeaf.class));
+            assertThat(DeferredLeaf.creationThreads).anyMatch(name -> name.startsWith("parallel-bootstrap-"));
+        }
+    }
+
     @Configuration(proxyBeanMethods = false)
     @EnableParallelBootstrap
     static class EnabledConfig {
@@ -335,6 +357,33 @@ class ParallelBootstrapIntegrationTests {
 
         ComponentRecordingBean() {
             creationThreads.add(Thread.currentThread().getName());
+        }
+    }
+
+    static class DeferredLeaf {
+
+        static final Set<String> creationThreads = ConcurrentHashMap.newKeySet();
+
+        DeferredLeaf() {
+            creationThreads.add(Thread.currentThread().getName());
+        }
+    }
+
+    static class ProviderHolder implements org.springframework.beans.factory.SmartInitializingSingleton {
+
+        static volatile DeferredLeaf providedLeaf;
+
+        private final org.springframework.beans.factory.ObjectProvider<DeferredLeaf> leafProvider;
+
+        ProviderHolder(org.springframework.beans.factory.ObjectProvider<DeferredLeaf> leafProvider) {
+            this.leafProvider = leafProvider;
+        }
+
+        @Override
+        public void afterSingletonsInstantiated() {
+            // Dereferenced only after all singletons have been instantiated, never during
+            // this bean's own construction.
+            providedLeaf = this.leafProvider.getObject();
         }
     }
 }
