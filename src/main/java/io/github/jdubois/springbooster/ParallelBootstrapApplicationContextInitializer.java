@@ -16,6 +16,7 @@
 
 package io.github.jdubois.springbooster;
 
+import org.springframework.beans.factory.support.BeanDefinitionRegistry;
 import org.springframework.context.ApplicationContextInitializer;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.util.Assert;
@@ -65,6 +66,10 @@ public class ParallelBootstrapApplicationContextInitializer
 
     @Override
     public void initialize(ConfigurableApplicationContext applicationContext) {
+        if (applicationContext.getBeanFactory() instanceof BeanDefinitionRegistry registry) {
+            ParallelBootstrapInfrastructure.register(registry, this.settings);
+            return;
+        }
         applicationContext.addBeanFactoryPostProcessor(new ParallelBootstrapBeanFactoryPostProcessor(this.settings));
     }
 }

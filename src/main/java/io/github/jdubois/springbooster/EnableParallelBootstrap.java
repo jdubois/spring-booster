@@ -83,6 +83,22 @@ public @interface EnableParallelBootstrap {
     String threadNamePrefix() default "parallel-bootstrap-";
 
     /**
+     * An explicit allowlist of {@code @Bean} factory-method bean names that may be
+     * backgrounded even when a dynamic configuration is present (which normally co-locates
+     * every {@code @Bean} bean with its configuration class). Defaults to an empty array.
+     * <p>This is the targeted, per-bean alternative to {@link #backgroundFactoryMethodBeans()}:
+     * only the named beans lose their co-location edge, while every other {@code @Bean} bean
+     * stays on the main thread. Each named bean must still clear the remaining safety checks
+     * and the connectivity-safe propagation, so a genuinely entangled bean is kept on the main
+     * thread and the {@code BeanCurrentlyInCreationException} fast-fail remains the backstop.
+     * Useful for backgrounding a known-independent heavyweight bean such as
+     * {@code springSecurityFilterChain}.
+     * @return the explicit background allowlist of {@code @Bean} bean names
+     * @see ParallelBootstrapSettings#getBackgroundBeanNames()
+     */
+    String[] backgroundBeanNames() default {};
+
+    /**
      * Whether beans produced by {@code @Bean} factory methods are eligible for
      * background initialization. Defaults to {@code false}, which co-locates every
      * factory-method bean with its (always main-thread) configuration class so that
@@ -93,4 +109,116 @@ public @interface EnableParallelBootstrap {
      * @see ParallelBootstrapSettings#isBackgroundFactoryMethodBeans()
      */
     boolean backgroundFactoryMethodBeans() default false;
+
+    /**
+     * Whether by-type dependency edges reached only through an {@code ObjectProvider},
+     * {@code ObjectFactory} or {@code Provider} wrapper, or through a {@code @Lazy}
+     * injection point, are treated as <em>deferred</em> and excluded from the
+     * connectivity-safe boundary. Defaults to {@code false}. Enabling this lets a
+     * main-thread bean depend on a background subtree purely through a provider /
+     * {@code @Lazy} without dragging that subtree onto the main thread, at the cost of
+     * assuming such handles are dereferenced lazily (after construction).
+     * @return whether provider / {@code @Lazy} edges are deferred
+     * @see ParallelBootstrapSettings#isDeferProviderEdges()
+     */
+    boolean deferProviderEdges() default false;
+
+    /**
+     * Whether beans that depend only on completed-leaf main-thread infrastructure
+     * singletons may still be backgrounded. Defaults to {@code false}. Set to
+     * {@code true} to let mutually independent consumers of a shared, terminal
+     * infrastructure bean (such as a {@code DataSource} feeding both Flyway and
+     * Liquibase) run concurrently even though that infrastructure bean stays on the
+     * main thread. Only the barrier&rarr;dependent direction is relaxed, and a violated
+     * assumption fails fast and falls back to sequential bootstrap.
+     * @return whether shared-infrastructure consumers may be backgrounded
+     * @see ParallelBootstrapSettings#isBackgroundSharedInfraConsumers()
+     */
+    boolean backgroundSharedInfraConsumers() default false;
+
+    /**
+     * An explicit set of bean names to treat as <em>completed-leaf barriers</em> &mdash;
+     * terminal main-thread infrastructure singletons across which mainline-ness is not
+     * propagated to consumers, so independent consumers of one such bean may overlap on
+     * background threads. Defaults to an empty array.
+     * <p>This is the user-named override of the structural barrier predicate behind
+     * {@link #backgroundSharedInfraConsumers()}: it lets a shared singleton exposed only as a
+     * co-located {@code @Bean} (such as a {@code DataSource}) act as a barrier so that, for
+     * example, Flyway and Liquibase overlap. A named bean is honored only when it is acyclic
+     * and a genuine leaf; supplying names here activates the relaxation for them even when
+     * {@link #backgroundSharedInfraConsumers()} is {@code false}.
+     * @return the explicit set of completed-leaf barrier bean names
+     * @see ParallelBootstrapSettings#getBarrierBeanNames()
+     */
+    String[] barrierBeanNames() default {};
+
+    /**
+     * Groups of {@code @Bean} bean names asserted to be <em>mutually independent</em>
+     * heavyweight beans that may be constructed concurrently. Defaults to an empty array.
+     * <p>For every member of a group the planner drops the configuration&rarr;{@code @Bean}
+     * co-location edge (like {@link #backgroundBeanNames()}), and additionally drops any sync
+     * co-location edge between two members of the same group, so an asserted-independent pair
+     * (such as {@code {entityManagerFactory, springSecurityFilterChain}} or
+     * {@code {flyway, liquibase}}) overlaps rather than serializes. Forced
+     * {@code depends-on}/factory edges and every other safety gate still apply, so a member
+     * pinned to the main thread stays there and an invisible eager by-type pull fails fast.
+     * Each {@link CoBackgroundGroup} holds one group's member names.
+     * @return the declared co-background groups
+     * @see ParallelBootstrapSettings#getCoBackgroundGroups()
+     */
+    CoBackgroundGroup[] coBackgroundGroups() default {};
+
+    /**
+     * Whether the experimental build-time bytecode lookup-detection refinement is
+     * enabled. Defaults to {@code false}. When {@code true}, {@code @Configuration}
+     * classes are scanned at the bytecode level to confirm whether they actually perform
+     * an invisible dynamic bean lookup, so a configuration conservatively classified as
+     * dynamic can be downgraded to pure (allowing its {@code @Bean} beans to background)
+     * when the scan proves no such lookup exists.
+     * @return whether bytecode lookup-detection is enabled
+     * @see ParallelBootstrapSettings#isBytecodeLookupDetection()
+     */
+    boolean bytecodeLookupDetection() default false;
+
+    /**
+     * Whether Spring Booster should precompute a reusable build-time plan during
+     * Spring AOT processing. Defaults to {@code true}.
+     * @return whether build-time planning is enabled
+     */
+    boolean buildTimePlanningEnabled() default true;
+
+    /**
+     * Whether Spring Booster may compute the bean graph at runtime when no valid
+     * generated plan is available. Defaults to {@code true}.
+     * @return whether runtime planning is enabled
+     */
+    boolean runtimePlanningEnabled() default true;
+
+    /**
+     * Whether a generated build-time plan is required. When {@code true}, Spring
+     * Booster skips parallel bootstrap rather than recomputing the plan at runtime if
+     * the generated plan is missing or stale.
+     * @return whether a generated plan is required
+     */
+    boolean generatedPlanRequired() default false;
+
+    /**
+     * A single <em>co-background group</em>: a set of {@code @Bean} bean names the user
+     * asserts are mutually independent heavyweight beans that may be constructed concurrently.
+     * Used as the element type of {@link EnableParallelBootstrap#coBackgroundGroups()}.
+     *
+     * @see EnableParallelBootstrap#coBackgroundGroups()
+     * @see ParallelBootstrapSettings#getCoBackgroundGroups()
+     */
+    @Target({})
+    @Retention(RetentionPolicy.RUNTIME)
+    @Documented
+    @interface CoBackgroundGroup {
+
+        /**
+         * The mutually-independent {@code @Bean} bean names forming this group.
+         * @return the group's bean names
+         */
+        String[] value();
+    }
 }

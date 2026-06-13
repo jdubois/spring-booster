@@ -25,3 +25,9 @@ bin/
 
 # Benchmark: the Petclinic checkout is recreated by benchmark/setup.sh
 benchmark/spring-petclinic/
+
+# Benchmark: the BootUI checkout is recreated by benchmark-bootui/setup.sh
+benchmark-bootui/boot-ui/
+
+# Benchmark: the JHipster checkout is recreated by benchmark-jhipster/setup.sh
+benchmark-jhipster/jhipster-sample-app/

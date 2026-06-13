@@ -20,8 +20,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.support.RootBeanDefinition;
+import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -112,16 +117,49 @@ class ParallelBootstrapIntegrationTests {
     }
 
     @Test
-    void factoryMethodBeansAreKeptMainlineByDefault() {
+    void pureFactoryMethodBeansAreBackgroundedByDefault() {
         RecordingConfig.creationThreads.clear();
         try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
-            // Default settings: factory-method beans are co-located with their
-            // configuration class, so none of the @Bean beans is backgrounded.
+            // Default settings: a pure configuration (no dynamic by-type lookups) no longer
+            // co-locates its @Bean beans, so they are free to be backgrounded.
             new ParallelBootstrapApplicationContextInitializer().initialize(context);
             context.register(PlainRecordingConfig.class);
             context.refresh();
             assertThat(context.getBeansOfType(RecordingBean.class)).hasSize(4);
-            assertThat(RecordingConfig.creationThreads).noneMatch(name -> name.startsWith("parallel-bootstrap-"));
+            assertThat(RecordingConfig.creationThreads).anyMatch(name -> name.startsWith("parallel-bootstrap-"));
+        }
+    }
+
+    @Test
+    void allowlistedFactoryMethodBeansAreBackgroundedDespiteDynamicConfiguration() {
+        DynamicRecordingConfig.creationThreads.clear();
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            // A dynamic configuration would normally keep all of its @Bean beans on the main
+            // thread. Allow-listing specific @Bean names drops only their co-location edge, so
+            // those beans may be backgrounded while the configuration stays on the main thread.
+            ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                    .backgroundBeanNames("one", "two", "three", "four")
+                    .build();
+            new ParallelBootstrapApplicationContextInitializer(settings).initialize(context);
+            context.register(DynamicRecordingConfig.class);
+            context.refresh();
+            assertThat(context.getBeansOfType(RecordingBean.class)).hasSize(4);
+            assertThat(DynamicRecordingConfig.creationThreads).anyMatch(name -> name.startsWith("parallel-bootstrap-"));
+        }
+    }
+
+    @Test
+    void dynamicFactoryMethodBeansAreKeptMainlineByDefault() {
+        DynamicRecordingConfig.creationThreads.clear();
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            // Default settings: a dynamic configuration (here it captures the
+            // ApplicationContext) keeps its @Bean beans co-located on the main thread.
+            new ParallelBootstrapApplicationContextInitializer().initialize(context);
+            context.register(DynamicRecordingConfig.class);
+            context.refresh();
+            assertThat(context.getBeansOfType(RecordingBean.class)).hasSize(4);
+            assertThat(DynamicRecordingConfig.creationThreads)
+                    .noneMatch(name -> name.startsWith("parallel-bootstrap-"));
         }
     }
 
@@ -139,6 +177,155 @@ class ParallelBootstrapIntegrationTests {
             context.refresh();
             assertThat(context.getBeansOfType(ComponentRecordingBean.class)).hasSize(4);
             assertThat(ComponentRecordingBean.creationThreads).anyMatch(name -> name.startsWith("parallel-bootstrap-"));
+        }
+    }
+
+    @Test
+    void frameworkBootstrapExecutorAliasDoesNotShadowLibraryPool() {
+        ComponentRecordingBean.creationThreads.clear();
+        AtomicInteger foreignThreadCounter = new AtomicInteger(1);
+        ThreadPoolExecutor foreignExecutor =
+                new ThreadPoolExecutor(2, 2, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(), runnable -> {
+                    Thread thread = new Thread(runnable, "foreign-task-" + foreignThreadCounter.getAndIncrement());
+                    thread.setDaemon(true);
+                    return thread;
+                });
+        BootstrapExecutorAliasConfig.foreignExecutor = foreignExecutor;
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            // Reproduce the Spring Boot setup: a shared "applicationTaskExecutor" plus a
+            // (bean-defined, non-ordered) post-processor that aliases it to the framework
+            // "bootstrapExecutor" name only when no such bean exists -- exactly like
+            // TaskExecutorConfigurations.BootstrapExecutorConfiguration. That alias post-processor
+            // runs after this library's PriorityOrdered post-processor, so the library must claim
+            // the "bootstrapExecutor" bean name first to keep using its own pool. Without that,
+            // Spring's finishBeanFactoryInitialization would background beans on the shared pool.
+            new ParallelBootstrapApplicationContextInitializer().initialize(context);
+            context.register(BootstrapExecutorAliasConfig.class);
+            for (int i = 0; i < 4; i++) {
+                context.registerBeanDefinition("component" + i, new RootBeanDefinition(ComponentRecordingBean.class));
+            }
+            context.refresh();
+
+            assertThat(context.getBeansOfType(ComponentRecordingBean.class)).hasSize(4);
+            // The library claimed the bootstrap-executor name, so the alias was never registered.
+            assertThat(((org.springframework.beans.factory.support.BeanDefinitionRegistry) context.getBeanFactory())
+                            .isAlias(ConfigurableApplicationContext.BOOTSTRAP_EXECUTOR_BEAN_NAME))
+                    .isFalse();
+            // Background beans run on the library's own pool, never on the foreign shared executor.
+            assertThat(ComponentRecordingBean.creationThreads).anyMatch(name -> name.startsWith("parallel-bootstrap-"));
+            assertThat(ComponentRecordingBean.creationThreads).noneMatch(name -> name.startsWith("foreign-task-"));
+        } finally {
+            BootstrapExecutorAliasConfig.foreignExecutor = null;
+            foreignExecutor.shutdown();
+        }
+    }
+
+    @Test
+    void deferredProviderEdgeLetsMainlineConsumerBackgroundItsProvidedBean() {
+        ProviderHolder.providedLeaf = null;
+        DeferredLeaf.creationThreads.clear();
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            ParallelBootstrapSettings settings =
+                    ParallelBootstrapSettings.builder().deferProviderEdges(true).build();
+            new ParallelBootstrapApplicationContextInitializer(settings).initialize(context);
+            // "holder" is a SmartInitializingSingleton, so it is infrastructure and stays
+            // on the main thread. It reaches "leaf" only through an ObjectProvider it
+            // dereferences after the singletons have been instantiated, so with provider
+            // edges deferred "leaf" can be backgrounded without a creation exception.
+            context.registerBeanDefinition("holder", new RootBeanDefinition(ProviderHolder.class));
+            context.registerBeanDefinition("leaf", new RootBeanDefinition(DeferredLeaf.class));
+            context.refresh();
+
+            assertThat(context.getBean(DeferredLeaf.class)).isNotNull();
+            assertThat(ProviderHolder.providedLeaf).isSameAs(context.getBean(DeferredLeaf.class));
+            assertThat(DeferredLeaf.creationThreads).anyMatch(name -> name.startsWith("parallel-bootstrap-"));
+        }
+    }
+
+    @Test
+    void configurationClassPulledByAnnotationOnMainThreadIsNotBackgrounded() {
+        ConfigCreation.threads.clear();
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            // AnnotatedConfig is a @Configuration class with no @Bean singletons, so the
+            // factory->bean co-location rule does not reach it. PullerConfig's @Bean method
+            // runs on the main thread and looks AnnotatedConfig up by annotation through
+            // getBeansWithAnnotation(...) -- a dynamic access no static analysis can see.
+            // Before configuration classes were forced onto the main thread, AnnotatedConfig
+            // was backgrounded and this refresh failed with BeanCurrentlyInCreationException
+            // (the failure observed booting Spring Security's EnableWebSecurityConfiguration).
+            new ParallelBootstrapApplicationContextInitializer().initialize(context);
+            context.register(AnnotatedConfig.class, PullerConfig.class);
+            for (int i = 0; i < 4; i++) {
+                context.registerBeanDefinition("component" + i, new RootBeanDefinition(ComponentRecordingBean.class));
+            }
+            context.refresh();
+
+            assertThat(context.getBeansWithAnnotation(Marker.class).values())
+                    .hasAtLeastOneElementOfType(AnnotatedConfig.class);
+            // The configuration class must have been created on the main thread.
+            assertThat(ConfigCreation.threads).containsExactly("main");
+        }
+    }
+
+    @Test
+    void independentConsumersOfSharedInfraRunConcurrentlyWhenEnabled() {
+        SharedInfraConfig.consumerThreads.clear();
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            // sharedInfra is a terminal main-thread leaf (forced mainline by a @DependsOn
+            // target). consumerA and consumerB are mutually independent and each only read
+            // it -- the Flyway/Liquibase-over-a-shared-DataSource shape. With the
+            // relaxation enabled they may be backgrounded and run concurrently while
+            // sharedInfra itself stays on the main thread. The flag keeps factory-method
+            // @Bean co-location active on its own, so backgroundFactoryMethodBeans is not
+            // needed.
+            ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                    .poolSize(4)
+                    .backgroundSharedInfraConsumers(true)
+                    .build();
+            new ParallelBootstrapApplicationContextInitializer(settings).initialize(context);
+            context.register(SharedInfraConfig.class);
+            context.refresh();
+
+            assertThat(context.getBean("consumerA")).isNotNull();
+            assertThat(context.getBean("consumerB")).isNotNull();
+            assertThat(SharedInfraConfig.consumerThreads).anyMatch(name -> name.startsWith("parallel-bootstrap-"));
+        }
+    }
+
+    @Test
+    void namedBarrierLetsCoLocatedConsumersOverlap() {
+        NamedBarrierConfig.consumerThreads.clear();
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            // dataSource is exposed only as a co-located @Bean of a dynamic configuration, so
+            // the structural barrier predicate does not recognise it. Naming it as a barrier
+            // pins it to the main thread and lets its two independent consumers overlap on
+            // background threads -- the Solution 2 named-barrier override.
+            ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                    .poolSize(4)
+                    .barrierBeanNames("dataSource")
+                    .build();
+            new ParallelBootstrapApplicationContextInitializer(settings).initialize(context);
+            context.register(NamedBarrierConfig.class);
+            context.refresh();
+
+            assertThat(context.getBean("consumerA")).isNotNull();
+            assertThat(context.getBean("consumerB")).isNotNull();
+            assertThat(NamedBarrierConfig.consumerThreads).anyMatch(name -> name.startsWith("parallel-bootstrap-"));
+        }
+    }
+
+    @Test
+    void coBackgroundGroupFromAnnotationBackgroundsMembersOfDynamicConfiguration() {
+        CoBackgroundGroupConfig.creationThreads.clear();
+        try (AnnotationConfigApplicationContext context =
+                new AnnotationConfigApplicationContext(CoBackgroundGroupConfig.class)) {
+            // The dynamic configuration would normally keep all four @Bean beans on the main
+            // thread. The two declared co-background groups drop their co-location edges, so
+            // the members may background. This also exercises the nested @CoBackgroundGroup
+            // annotation parsing in ParallelBootstrapRegistrar.
+            assertThat(context.getBeansOfType(RecordingBean.class)).hasSize(4);
+            assertThat(CoBackgroundGroupConfig.creationThreads)
+                    .anyMatch(name -> name.startsWith("parallel-bootstrap-"));
         }
     }
 
@@ -210,6 +397,35 @@ class ParallelBootstrapIntegrationTests {
         @Bean
         RecordingBean four() {
             return new RecordingBean(RecordingConfig.creationThreads);
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class DynamicRecordingConfig implements org.springframework.context.ApplicationContextAware {
+
+        static final Set<String> creationThreads = ConcurrentHashMap.newKeySet();
+
+        @Override
+        public void setApplicationContext(org.springframework.context.ApplicationContext applicationContext) {}
+
+        @Bean
+        RecordingBean one() {
+            return new RecordingBean(creationThreads);
+        }
+
+        @Bean
+        RecordingBean two() {
+            return new RecordingBean(creationThreads);
+        }
+
+        @Bean
+        RecordingBean three() {
+            return new RecordingBean(creationThreads);
+        }
+
+        @Bean
+        RecordingBean four() {
+            return new RecordingBean(creationThreads);
         }
     }
 
@@ -291,6 +507,194 @@ class ParallelBootstrapIntegrationTests {
 
         ComponentRecordingBean() {
             creationThreads.add(Thread.currentThread().getName());
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class BootstrapExecutorAliasConfig {
+
+        static volatile java.util.concurrent.Executor foreignExecutor;
+
+        @Bean(name = "applicationTaskExecutor")
+        java.util.concurrent.Executor applicationTaskExecutor() {
+            return foreignExecutor;
+        }
+
+        // Mimics Spring Boot's TaskExecutorConfigurations.BootstrapExecutorConfiguration: a
+        // non-ordered BeanFactoryPostProcessor that aliases applicationTaskExecutor to the
+        // framework bootstrap-executor name only when no bootstrapExecutor bean exists.
+        @Bean
+        static org.springframework.beans.factory.config.BeanFactoryPostProcessor bootstrapExecutorAliasPostProcessor() {
+            return beanFactory -> {
+                boolean hasBootstrap =
+                        beanFactory.containsBean(ConfigurableApplicationContext.BOOTSTRAP_EXECUTOR_BEAN_NAME);
+                boolean hasApplicationTaskExecutor = beanFactory.containsBean("applicationTaskExecutor");
+                if (!hasBootstrap && hasApplicationTaskExecutor) {
+                    beanFactory.registerAlias(
+                            "applicationTaskExecutor", ConfigurableApplicationContext.BOOTSTRAP_EXECUTOR_BEAN_NAME);
+                }
+            };
+        }
+    }
+
+    static class DeferredLeaf {
+
+        static final Set<String> creationThreads = ConcurrentHashMap.newKeySet();
+
+        DeferredLeaf() {
+            creationThreads.add(Thread.currentThread().getName());
+        }
+    }
+
+    static class ProviderHolder implements org.springframework.beans.factory.SmartInitializingSingleton {
+
+        static volatile DeferredLeaf providedLeaf;
+
+        private final org.springframework.beans.factory.ObjectProvider<DeferredLeaf> leafProvider;
+
+        ProviderHolder(org.springframework.beans.factory.ObjectProvider<DeferredLeaf> leafProvider) {
+            this.leafProvider = leafProvider;
+        }
+
+        @Override
+        public void afterSingletonsInstantiated() {
+            // Dereferenced only after all singletons have been instantiated, never during
+            // this bean's own construction.
+            providedLeaf = this.leafProvider.getObject();
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class SharedInfraConfig {
+
+        static final Set<String> consumerThreads = ConcurrentHashMap.newKeySet();
+
+        // A terminal infrastructure leaf standing in for a shared DataSource.
+        @Bean
+        SharedInfra sharedInfra() {
+            return new SharedInfra();
+        }
+
+        // Forces sharedInfra onto the main thread (as Spring Boot's
+        // EntityManagerFactoryDependsOnPostProcessor does for the real DataSource).
+        @Bean
+        @org.springframework.context.annotation.DependsOn("sharedInfra")
+        Object entityManagerFactory() {
+            return new Object();
+        }
+
+        @Bean
+        Object consumerA(SharedInfra sharedInfra) {
+            consumerThreads.add(Thread.currentThread().getName());
+            return new Object();
+        }
+
+        @Bean
+        Object consumerB(SharedInfra sharedInfra) {
+            consumerThreads.add(Thread.currentThread().getName());
+            return new Object();
+        }
+    }
+
+    static class SharedInfra {}
+
+    // A dynamic configuration (ApplicationContextAware) whose only link to the shared
+    // dataSource is a co-located @Bean, so the structural barrier predicate cannot detect
+    // it. Naming dataSource as a barrier lets consumerA and consumerB overlap.
+    @Configuration(proxyBeanMethods = false)
+    static class NamedBarrierConfig implements org.springframework.context.ApplicationContextAware {
+
+        static final Set<String> consumerThreads = ConcurrentHashMap.newKeySet();
+
+        @Override
+        public void setApplicationContext(org.springframework.context.ApplicationContext applicationContext) {}
+
+        @Bean
+        SharedInfra dataSource() {
+            return new SharedInfra();
+        }
+
+        @Bean
+        Object consumerA(SharedInfra dataSource) {
+            consumerThreads.add(Thread.currentThread().getName());
+            return new Object();
+        }
+
+        @Bean
+        Object consumerB(SharedInfra dataSource) {
+            consumerThreads.add(Thread.currentThread().getName());
+            return new Object();
+        }
+    }
+
+    // A dynamic configuration whose four mutually independent @Bean beans would all be
+    // co-located on the main thread. The two declared co-background groups assert their
+    // independence so the members may background; also exercises @CoBackgroundGroup parsing.
+    @Configuration(proxyBeanMethods = false)
+    @EnableParallelBootstrap(
+            poolSize = 4,
+            coBackgroundGroups = {
+                @EnableParallelBootstrap.CoBackgroundGroup({"one", "two"}),
+                @EnableParallelBootstrap.CoBackgroundGroup({"three", "four"})
+            })
+    static class CoBackgroundGroupConfig implements org.springframework.context.ApplicationContextAware {
+
+        static final Set<String> creationThreads = ConcurrentHashMap.newKeySet();
+
+        @Override
+        public void setApplicationContext(org.springframework.context.ApplicationContext applicationContext) {}
+
+        @Bean
+        RecordingBean one() {
+            return new RecordingBean(creationThreads);
+        }
+
+        @Bean
+        RecordingBean two() {
+            return new RecordingBean(creationThreads);
+        }
+
+        @Bean
+        RecordingBean three() {
+            return new RecordingBean(creationThreads);
+        }
+
+        @Bean
+        RecordingBean four() {
+            return new RecordingBean(creationThreads);
+        }
+    }
+
+    @java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.RUNTIME)
+    @java.lang.annotation.Target(java.lang.annotation.ElementType.TYPE)
+    @interface Marker {}
+
+    static class ConfigCreation {
+
+        static final Set<String> threads = ConcurrentHashMap.newKeySet();
+    }
+
+    // A configuration class with no @Bean singletons, so the factory->bean co-location
+    // rule does not reach it; it must still be kept on the main thread because it is
+    // pulled dynamically by annotation below.
+    @Marker
+    @Configuration(proxyBeanMethods = false)
+    static class AnnotatedConfig {
+
+        AnnotatedConfig() {
+            ConfigCreation.threads.add(Thread.currentThread().getName());
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class PullerConfig {
+
+        // Runs on the main thread and resolves AnnotatedConfig by annotation, a dynamic
+        // access that no static dependency analysis can observe.
+        @Bean
+        String puller(org.springframework.context.ApplicationContext applicationContext) {
+            return String.valueOf(
+                    applicationContext.getBeansWithAnnotation(Marker.class).size());
         }
     }
 }
