@@ -86,7 +86,7 @@ public final class BeanStartupProfiler implements InstantiationAwareBeanPostProc
 
     private final String backgroundThreadPrefix;
 
-    private final ConcurrentHashMap<String, long[]> pending = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Long> pending = new ConcurrentHashMap<>();
 
     private final ConcurrentLinkedQueue<BeanStartupRecord> records = new ConcurrentLinkedQueue<>();
 
@@ -109,17 +109,16 @@ public final class BeanStartupProfiler implements InstantiationAwareBeanPostProc
 
     @Override
     public @Nullable Object postProcessBeforeInstantiation(Class<?> beanClass, String beanName) throws BeansException {
-        // Record the start time and creating thread; never short-circuit instantiation.
-        this.pending.put(
-                beanName, new long[] {System.nanoTime(), Thread.currentThread().getId()});
+        // Record the start time; never short-circuit instantiation.
+        this.pending.put(beanName, System.nanoTime());
         return null;
     }
 
     @Override
     public @Nullable Object postProcessAfterInitialization(Object bean, String beanName) throws BeansException {
-        long[] start = this.pending.remove(beanName);
+        Long start = this.pending.remove(beanName);
         if (start != null) {
-            long durationNanos = Math.max(0L, System.nanoTime() - start[0]);
+            long durationNanos = Math.max(0L, System.nanoTime() - start);
             String threadName = Thread.currentThread().getName();
             boolean background = threadName.startsWith(this.backgroundThreadPrefix);
             this.records.add(new BeanStartupRecord(beanName, threadName, durationNanos, background));
