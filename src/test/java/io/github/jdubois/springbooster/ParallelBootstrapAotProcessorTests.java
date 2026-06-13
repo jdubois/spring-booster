@@ -96,7 +96,8 @@ class ParallelBootstrapAotProcessorTests {
 
     private static String allGeneratedSource(InMemoryGeneratedFiles generatedFiles) throws IOException {
         StringBuilder content = new StringBuilder();
-        for (String path : generatedFiles.getGeneratedFiles(GeneratedFiles.Kind.SOURCE).keySet()) {
+        for (String path :
+                generatedFiles.getGeneratedFiles(GeneratedFiles.Kind.SOURCE).keySet()) {
             content.append(generatedFiles.getGeneratedFileContent(GeneratedFiles.Kind.SOURCE, path));
         }
         return content.toString();

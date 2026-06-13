@@ -184,8 +184,9 @@ class ParallelBootstrapBeanFactoryPostProcessorTests {
     void reusesPreMarkedBeansWhenRuntimePlanningIsDisabled() {
         registerSingleton("a");
         ((AbstractBeanDefinition) this.beanFactory.getBeanDefinition("a")).setBackgroundInit(true);
-        ParallelBootstrapSettings settings =
-                ParallelBootstrapSettings.builder().runtimePlanningEnabled(false).build();
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                .runtimePlanningEnabled(false)
+                .build();
 
         new ParallelBootstrapBeanFactoryPostProcessor(settings).postProcessBeanFactory(this.beanFactory);
 

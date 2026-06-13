@@ -54,7 +54,8 @@ public final class ParallelBootstrapAotProcessor implements BeanFactoryInitializ
         @Override
         public void applyTo(
                 GenerationContext generationContext, BeanFactoryInitializationCode beanFactoryInitializationCode) {
-            GeneratedMethod generatedMethod = beanFactoryInitializationCode.getMethods()
+            GeneratedMethod generatedMethod = beanFactoryInitializationCode
+                    .getMethods()
                     .add("markSpringBoosterBackgroundBeans", this::generateBackgroundInitMethod);
             beanFactoryInitializationCode.addInitializer(generatedMethod.toMethodReference());
             generationContext
@@ -65,14 +66,16 @@ public final class ParallelBootstrapAotProcessor implements BeanFactoryInitializ
         private void generateBackgroundInitMethod(org.springframework.javapoet.MethodSpec.Builder method) {
             method.addJavadoc("Mark precomputed Spring Booster beans for background initialization.");
             method.addModifiers(Modifier.PRIVATE);
-            method.addParameter(ConfigurableListableBeanFactory.class, BeanFactoryInitializationCode.BEAN_FACTORY_VARIABLE);
+            method.addParameter(
+                    ConfigurableListableBeanFactory.class, BeanFactoryInitializationCode.BEAN_FACTORY_VARIABLE);
             for (String beanName : this.plan.getCandidateBeanNames()) {
                 method.addStatement(
                         "$T beanDefinition = $L.getBeanDefinition($S)",
                         BeanDefinition.class,
                         BeanFactoryInitializationCode.BEAN_FACTORY_VARIABLE,
                         beanName);
-                method.beginControlFlow("if (beanDefinition instanceof $T abstractBeanDefinition)", AbstractBeanDefinition.class);
+                method.beginControlFlow(
+                        "if (beanDefinition instanceof $T abstractBeanDefinition)", AbstractBeanDefinition.class);
                 method.addStatement("abstractBeanDefinition.setBackgroundInit(true)");
                 method.endControlFlow();
             }
