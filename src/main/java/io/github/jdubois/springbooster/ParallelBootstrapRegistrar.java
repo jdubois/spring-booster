@@ -112,6 +112,10 @@ class ParallelBootstrapRegistrar implements ImportBeanDefinitionRegistrar {
             if (generatedPlanRequired instanceof Boolean generatedPlanRequiredValue) {
                 builder.generatedPlanRequired(generatedPlanRequiredValue);
             }
+            Object useVirtualThreads = attributes.get("useVirtualThreads");
+            if (useVirtualThreads instanceof Boolean useVirtualThreadsValue) {
+                builder.useVirtualThreads(useVirtualThreadsValue);
+            }
         }
         return builder.build();
     }

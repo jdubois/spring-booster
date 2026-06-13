@@ -39,9 +39,9 @@ degrades gracefully to the normal sequential bootstrap.
 ## Build, test, and publish
 
 Build with **Maven** via the committed wrapper (`./mvnw`); no local Maven install
-is required. **Use a Java 17 JDK to build** (Spring Framework 7 / Spring Boot 4
-baseline): the Palantir Java Format engine used by Spotless runs under the build
-JDK, so set `JAVA_HOME` to a JDK 17 before building.
+is required. **Use a Java 25 JDK to build** (the project's baseline): the Palantir
+Java Format engine used by Spotless runs under the build JDK, so set `JAVA_HOME` to
+a JDK 25 before building.
 
 ```bash
 ./mvnw verify          # compile + test + assemble jars + spotless:check

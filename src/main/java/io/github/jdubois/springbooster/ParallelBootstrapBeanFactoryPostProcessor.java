@@ -27,6 +27,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -162,13 +164,18 @@ public class ParallelBootstrapBeanFactoryPostProcessor
             for (String beanName : candidates) {
                 markForBackgroundInit(beanFactory, beanName);
             }
-            ThreadPoolExecutor executor = createBoundedExecutor();
+            ExecutorService executor = createBootstrapExecutor();
             beanFactory.setBootstrapExecutor(executor);
             claimBootstrapExecutorBeanName(beanFactory, executor);
             registerShutdownHook(beanFactory, executor);
             if (logger.isInfoEnabled()) {
-                logger.info("Parallel bootstrap enabled for " + candidates.size() + " bean(s) using a pool of "
-                        + this.settings.getPoolSize() + " thread(s)");
+                if (this.settings.isUseVirtualThreads()) {
+                    logger.info("Parallel bootstrap enabled for " + candidates.size()
+                            + " bean(s) using a virtual thread per bean");
+                } else {
+                    logger.info("Parallel bootstrap enabled for " + candidates.size() + " bean(s) using a pool of "
+                            + this.settings.getPoolSize() + " thread(s)");
+                }
             }
         } catch (RuntimeException ex) {
             // Kill-switch / graceful fallback: never let planning break the context.
@@ -760,6 +767,19 @@ public class ParallelBootstrapBeanFactoryPostProcessor
         }
     }
 
+    private ExecutorService createBootstrapExecutor() {
+        if (this.settings.isUseVirtualThreads()) {
+            return createVirtualThreadExecutor();
+        }
+        return createBoundedExecutor();
+    }
+
+    private ExecutorService createVirtualThreadExecutor() {
+        ThreadFactory threadFactory =
+                Thread.ofVirtual().name(this.settings.getThreadNamePrefix(), 1).factory();
+        return Executors.newThreadPerTaskExecutor(threadFactory);
+    }
+
     private ThreadPoolExecutor createBoundedExecutor() {
         int poolSize = this.settings.getPoolSize();
         ThreadFactory threadFactory = new BootstrapThreadFactory(this.settings.getThreadNamePrefix());
@@ -798,7 +818,7 @@ public class ParallelBootstrapBeanFactoryPostProcessor
                 + "' bean so it is used for background instantiation");
     }
 
-    private void registerShutdownHook(ConfigurableListableBeanFactory beanFactory, ThreadPoolExecutor executor) {
+    private void registerShutdownHook(ConfigurableListableBeanFactory beanFactory, ExecutorService executor) {
         // Shut the pool down right after the context has refreshed so it does not
         // linger for the lifetime of the context. The listener is registered as a
         // manual singleton so that it is detected by the context's event multicaster.

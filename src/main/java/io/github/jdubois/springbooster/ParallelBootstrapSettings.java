@@ -86,6 +86,8 @@ public final class ParallelBootstrapSettings {
 
     private final boolean generatedPlanRequired;
 
+    private final boolean useVirtualThreads;
+
     private ParallelBootstrapSettings(
             boolean enabled,
             int poolSize,
@@ -100,7 +102,8 @@ public final class ParallelBootstrapSettings {
             boolean bytecodeLookupDetection,
             boolean buildTimePlanningEnabled,
             boolean runtimePlanningEnabled,
-            boolean generatedPlanRequired) {
+            boolean generatedPlanRequired,
+            boolean useVirtualThreads) {
 
         this.enabled = enabled;
         this.poolSize = poolSize;
@@ -116,6 +119,7 @@ public final class ParallelBootstrapSettings {
         this.buildTimePlanningEnabled = buildTimePlanningEnabled;
         this.runtimePlanningEnabled = runtimePlanningEnabled;
         this.generatedPlanRequired = generatedPlanRequired;
+        this.useVirtualThreads = useVirtualThreads;
     }
 
     /**
@@ -371,6 +375,29 @@ public final class ParallelBootstrapSettings {
     }
 
     /**
+     * Whether the bootstrap executor should run each backgrounded bean on a
+     * <em>virtual thread</em> instead of on the bounded platform-thread pool.
+     * <p>Defaults to {@code false}, which installs the bounded
+     * {@link #getPoolSize() pool-sized} executor. Set to {@code true} to install an
+     * unbounded virtual-thread-per-task executor instead.
+     * <p>Bean bootstrap is frequently blocking-bound (opening connection pools,
+     * warming caches, establishing remote clients). Virtual threads let every
+     * independent blocking bean make progress concurrently without the
+     * {@link #getPoolSize() poolSize} ceiling and without oversubscribing the
+     * platform-thread carriers. The Java 25 baseline matters here: since the fix for
+     * pinning on {@code synchronized} (JDK&nbsp;24, JEP&nbsp;491), a virtual thread
+     * that blocks inside the singleton-creation lock no longer pins its carrier, so
+     * the blocking-bound part of bootstrap gets the full benefit.
+     * <p>When {@code true}, {@link #getPoolSize() poolSize} is ignored (the executor
+     * is unbounded). Purely CPU-bound bootstrap workloads should keep the default
+     * bounded pool, whose size tracks the available processor count.
+     * @return whether to use a virtual-thread-per-task bootstrap executor
+     */
+    public boolean isUseVirtualThreads() {
+        return this.useVirtualThreads;
+    }
+
+    /**
      * Create settings with sensible defaults: enabled, a pool size of twice the
      * number of available processors, the {@code parallel-bootstrap-} thread prefix,
      * and a candidate filter that accepts every bean.
@@ -463,6 +490,8 @@ public final class ParallelBootstrapSettings {
         private boolean runtimePlanningEnabled = true;
 
         private boolean generatedPlanRequired = false;
+
+        private boolean useVirtualThreads = false;
 
         private Builder() {}
 
@@ -727,6 +756,20 @@ public final class ParallelBootstrapSettings {
         }
 
         /**
+         * Set whether the bootstrap executor should run each backgrounded bean on a
+         * virtual thread instead of on the bounded platform-thread pool. Defaults to
+         * {@code false}. When {@code true}, an unbounded virtual-thread-per-task
+         * executor is installed and {@link #poolSize(int) poolSize} is ignored.
+         * @param useVirtualThreads whether to use a virtual-thread-per-task executor
+         * @return this builder
+         * @see ParallelBootstrapSettings#isUseVirtualThreads()
+         */
+        public Builder useVirtualThreads(boolean useVirtualThreads) {
+            this.useVirtualThreads = useVirtualThreads;
+            return this;
+        }
+
+        /**
          * Build the immutable {@link ParallelBootstrapSettings} instance.
          * @return the immutable settings instance
          */
@@ -745,7 +788,8 @@ public final class ParallelBootstrapSettings {
                     this.bytecodeLookupDetection,
                     this.buildTimePlanningEnabled,
                     this.runtimePlanningEnabled,
-                    this.generatedPlanRequired);
+                    this.generatedPlanRequired,
+                    this.useVirtualThreads);
         }
     }
 }

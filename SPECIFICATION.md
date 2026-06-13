@@ -101,10 +101,10 @@ All code lives in a single package: `io.github.jdubois.springbooster`.
 
 | Class | Responsibility |
 |---|---|
-| `EnableParallelBootstrap` | Public opt-in annotation. `@Import`s the registrar. Carries tuning attributes (`enabled`, `poolSize`, `threadNamePrefix`, `backgroundBeanNames`, `backgroundFactoryMethodBeans`, `deferProviderEdges`, `backgroundSharedInfraConsumers`, `barrierBeanNames`, `coBackgroundGroups`). |
+| `EnableParallelBootstrap` | Public opt-in annotation. `@Import`s the registrar. Carries tuning attributes (`enabled`, `poolSize`, `threadNamePrefix`, `backgroundBeanNames`, `backgroundFactoryMethodBeans`, `deferProviderEdges`, `backgroundSharedInfraConsumers`, `barrierBeanNames`, `coBackgroundGroups`, `useVirtualThreads`). |
 | `ParallelBootstrapRegistrar` | `ImportBeanDefinitionRegistrar` activated by the annotation. Translates annotation attributes into `ParallelBootstrapSettings` and registers the post-processor as an infrastructure bean (idempotently). |
 | `ParallelBootstrapApplicationContextInitializer` | `ApplicationContextInitializer` entry point for programmatic / Spring Boot (`spring.factories`) registration, with no need for the annotation. |
-| `ParallelBootstrapSettings` | Immutable configuration (pool size, thread-name prefix, kill-switch, candidate `Predicate`, `backgroundBeanNames` allowlist, `backgroundFactoryMethodBeans`, `deferProviderEdges` and `backgroundSharedInfraConsumers` toggles, `barrierBeanNames` named completed-leaf barriers, `coBackgroundGroups` independence hints, `bytecodeLookupDetection` refinement, and build-time planning/fallback flags). Built via a fluent `Builder`. Defines the per-bean opt-out and force-background attributes. |
+| `ParallelBootstrapSettings` | Immutable configuration (pool size, thread-name prefix, kill-switch, candidate `Predicate`, `backgroundBeanNames` allowlist, `backgroundFactoryMethodBeans`, `deferProviderEdges` and `backgroundSharedInfraConsumers` toggles, `barrierBeanNames` named completed-leaf barriers, `coBackgroundGroups` independence hints, `bytecodeLookupDetection` refinement, `useVirtualThreads` toggle, and build-time planning/fallback flags). Built via a fluent `Builder`. Defines the per-bean opt-out and force-background attributes. |
 | `ParallelBootstrapPlanner` | Shared planner used both at runtime and during AOT generation. Delegates candidate selection to the post-processor so build-time and runtime select identical candidates (preserving every relaxation), and produces a conservative bootstrap plan plus compatibility fingerprints. |
 | `ParallelBootstrapPlan` | Serialized build-time plan containing the eligible background beans, forced-mainline beans, sync/co-location constraints, and compatibility fingerprints. |
 | `ParallelBootstrapAotProcessor` | Spring AOT processor that computes the conservative plan at build time and emits it as a generated classpath resource. |
@@ -627,8 +627,19 @@ than producing wrong results (design goal #1).
   the alias, and Spring resolves the bootstrap executor to the dedicated pool instead of Boot's
   shared task pool. A genuine, explicitly defined `bootstrapExecutor` bean is left untouched and
   still wins.
+* The bootstrap executor is, by default, a `ThreadPoolExecutor` with a **fixed,
+  bounded** size (`max(2, availableProcessors() * 2)`) and **daemon** threads named
+  with the configured prefix (default `parallel-bootstrap-`).
+* When `useVirtualThreads` is enabled (`@EnableParallelBootstrap(useVirtualThreads = true)`
+  or `ParallelBootstrapSettings.builder().useVirtualThreads(true)`), the executor is
+  instead an **unbounded virtual-thread-per-task** executor whose threads are named
+  with the same prefix; `poolSize` is ignored. This targets the frequently
+  blocking-bound nature of bean bootstrap and relies on the Java 25 baseline, where
+  blocking inside Spring's singleton-creation lock no longer pins a carrier (JDK 24,
+  JEP 491). The startup speedup ceiling remains the bean dependency graph's critical
+  path; CPU-bound workloads should keep the bounded pool.
 * A `ContextRefreshedEvent` listener (registered as a manual singleton so the event
-  multicaster detects it) clears the factory's bootstrap executor and shuts the pool
+  multicaster detects it) clears the factory's bootstrap executor and shuts it
   down **immediately after refresh**, so threads do not outlive bootstrap.
 * The **global kill-switch** (`enabled = false`) registers the post-processor but
   makes it a no-op, allowing the feature to be disabled without code removal.
@@ -643,7 +654,7 @@ than producing wrong results (design goal #1).
 * **Artifacts:** main jar, `-sources.jar`, `-javadoc.jar` and POM (the source and
   javadoc jars are attached during `package`). `./mvnw install` installs them to
   `~/.m2`.
-* **Build JDK:** Java 17. The build must run on a JDK 17 because the Palantir Java
+* **Build JDK:** Java 25. The build must run on a JDK 25 because the Palantir Java
   Format engine used by Spotless runs under the build JDK.
 * **Code formatting:** Spotless with Palantir Java Format
   (`./mvnw spotless:apply` to reformat; `spotless:check` is bound to the `verify`
