@@ -187,6 +187,45 @@ class BeanDependencyGraphTests {
     }
 
     @Test
+    void objectProviderEdgeIsExcludedFromSyncWhenDeferred() {
+        register("leaf", Leaf.class);
+        register("consumer", ProviderConsumer.class);
+
+        BeanDependencyGraph graph =
+                BeanDependencyGraph.build(this.beanFactory, List.of("leaf", "consumer"), true, true);
+
+        // With deferral enabled the provider edge is no longer a sync (boundary) edge,
+        // but it is still a genuine construction dependency for cycle/layering.
+        assertThat(graph.getSyncDependencies("consumer")).doesNotContain("leaf");
+        assertThat(graph.getDependencies("consumer")).contains("leaf");
+    }
+
+    @Test
+    void directByTypeEdgeRemainsSyncWhenDeferralEnabled() {
+        register("leaf", Leaf.class);
+        register("consumer", ConstructorConsumer.class);
+
+        BeanDependencyGraph graph =
+                BeanDependencyGraph.build(this.beanFactory, List.of("leaf", "consumer"), true, true);
+
+        // A direct (non-provider, non-lazy) by-type dependency is still resolved during
+        // construction, so it stays a sync edge even when deferral is enabled.
+        assertThat(graph.getSyncDependencies("consumer")).contains("leaf");
+    }
+
+    @Test
+    void lazyFieldEdgeIsExcludedFromSyncWhenDeferred() {
+        register("leaf", Leaf.class);
+        register("consumer", LazyFieldConsumer.class);
+
+        BeanDependencyGraph graph =
+                BeanDependencyGraph.build(this.beanFactory, List.of("leaf", "consumer"), true, true);
+
+        assertThat(graph.getSyncDependencies("consumer")).doesNotContain("leaf");
+        assertThat(graph.getDependencies("consumer")).contains("leaf");
+    }
+
+    @Test
     void collectionInjectionProducesEdge() {
         register("leaf", Leaf.class);
         register("consumer", CollectionConsumer.class);
@@ -208,7 +247,24 @@ class BeanDependencyGraphTests {
     }
 
     @Test
-    void factoryMethodBeanIsColocatedWithConfigurationByDefault() {
+    void dynamicFactoryMethodBeanIsColocatedWithConfigurationByDefault() {
+        register("config", DynamicFactoryConfig.class);
+        RootBeanDefinition product = new RootBeanDefinition();
+        product.setFactoryBeanName("config");
+        product.setFactoryMethodName("product");
+        this.beanFactory.registerBeanDefinition("product", product);
+
+        BeanDependencyGraph graph = BeanDependencyGraph.build(this.beanFactory, List.of("config", "product"), true);
+
+        // The dynamic configuration gains a co-location sync edge to its @Bean product, so
+        // the planner keeps the product on the configuration's (main) thread.
+        assertThat(graph.getSyncDependencies("config")).contains("product");
+        // The genuine construction dependency still runs in the opposite direction.
+        assertThat(graph.getDependencies("product")).contains("config");
+    }
+
+    @Test
+    void pureFactoryMethodBeanIsNotColocatedWhenNoDynamicConfigurationIsPresent() {
         register("config", FactoryConfig.class);
         RootBeanDefinition product = new RootBeanDefinition();
         product.setFactoryBeanName("config");
@@ -217,16 +273,44 @@ class BeanDependencyGraphTests {
 
         BeanDependencyGraph graph = BeanDependencyGraph.build(this.beanFactory, List.of("config", "product"), true);
 
-        // The configuration gains a co-location sync edge to its @Bean product, so the
-        // planner keeps the product on the configuration's (main) thread.
-        assertThat(graph.getSyncDependencies("config")).contains("product");
+        // With no dynamic configuration anywhere in the context, no invisible by-type lookup
+        // can occur, so a pure configuration's @Bean product is left free to be backgrounded:
+        // no co-location edge is added.
+        assertThat(graph.getSyncDependencies("config")).doesNotContain("product");
         // The genuine construction dependency still runs in the opposite direction.
         assertThat(graph.getDependencies("product")).contains("config");
     }
 
     @Test
+    void pureFactoryMethodBeanIsColocatedWhenADynamicConfigurationIsPresent() {
+        // A pure configuration with its own @Bean product.
+        register("pureConfig", FactoryConfig.class);
+        RootBeanDefinition pureProduct = new RootBeanDefinition();
+        pureProduct.setFactoryBeanName("pureConfig");
+        pureProduct.setFactoryMethodName("product");
+        this.beanFactory.registerBeanDefinition("pureProduct", pureProduct);
+
+        // A coexisting dynamic configuration. Its invisible by-type lookups can target the
+        // pure configuration's @Bean by type, on the main thread, so the pure product must
+        // also stay co-located on the main thread.
+        register("dynamicConfig", DynamicFactoryConfig.class);
+        RootBeanDefinition dynamicProduct = new RootBeanDefinition();
+        dynamicProduct.setFactoryBeanName("dynamicConfig");
+        dynamicProduct.setFactoryMethodName("product");
+        this.beanFactory.registerBeanDefinition("dynamicProduct", dynamicProduct);
+
+        BeanDependencyGraph graph = BeanDependencyGraph.build(
+                this.beanFactory, List.of("pureConfig", "pureProduct", "dynamicConfig", "dynamicProduct"), true);
+
+        // Both products are co-located with their configurations because a dynamic
+        // configuration is present in the context.
+        assertThat(graph.getSyncDependencies("pureConfig")).contains("pureProduct");
+        assertThat(graph.getSyncDependencies("dynamicConfig")).contains("dynamicProduct");
+    }
+
+    @Test
     void factoryMethodColocationCanBeDisabled() {
-        register("config", FactoryConfig.class);
+        register("config", DynamicFactoryConfig.class);
         RootBeanDefinition product = new RootBeanDefinition();
         product.setFactoryBeanName("config");
         product.setFactoryMethodName("product");
@@ -265,6 +349,16 @@ class BeanDependencyGraphTests {
         }
     }
 
+    static class DynamicFactoryConfig implements org.springframework.context.ApplicationContextAware {
+
+        @Override
+        public void setApplicationContext(org.springframework.context.ApplicationContext applicationContext) {}
+
+        Leaf product() {
+            return new Leaf();
+        }
+    }
+
     static class ConstructorConsumer {
         ConstructorConsumer(Leaf leaf) {}
     }
@@ -279,6 +373,13 @@ class BeanDependencyGraphTests {
 
         @Autowired
         ObjectProvider<Leaf> leaf;
+    }
+
+    static class LazyFieldConsumer {
+
+        @Autowired
+        @org.springframework.context.annotation.Lazy
+        Leaf leaf;
     }
 
     static class CollectionConsumer {

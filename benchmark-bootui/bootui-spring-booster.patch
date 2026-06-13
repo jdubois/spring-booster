@@ -1,0 +1,80 @@
+diff --git a/bootui-sample-app/pom.xml b/bootui-sample-app/pom.xml
+index 325be51..d43088b 100644
+--- a/bootui-sample-app/pom.xml
++++ b/bootui-sample-app/pom.xml
+@@ -109,6 +109,14 @@
+             <artifactId>h2</artifactId>
+             <scope>runtime</scope>
+         </dependency>
++
++        <!-- Spring Booster: opt-in parallel bean instantiation during context bootstrap.
++             Installed locally via `mvn install` in the spring-booster project. -->
++        <dependency>
++            <groupId>io.github.jdubois</groupId>
++            <artifactId>spring-booster</artifactId>
++            <version>0.1.0-SNAPSHOT</version>
++        </dependency>
+         <dependency>
+             <groupId>org.springframework.boot</groupId>
+             <artifactId>spring-boot-starter-test</artifactId>
+diff --git a/bootui-sample-app/src/main/java/io/github/jdubois/bootui/sample/BootUiSampleApplication.java b/bootui-sample-app/src/main/java/io/github/jdubois/bootui/sample/BootUiSampleApplication.java
+index 74dc392..4004988 100644
+--- a/bootui-sample-app/src/main/java/io/github/jdubois/bootui/sample/BootUiSampleApplication.java
++++ b/bootui-sample-app/src/main/java/io/github/jdubois/bootui/sample/BootUiSampleApplication.java
+@@ -25,6 +25,9 @@ public class BootUiSampleApplication {
+ 
+     public static void main(String[] args) {
+         SpringApplication application = new SpringApplication(BootUiSampleApplication.class);
++        // Opt-in parallel bean instantiation via Spring Booster. No-op unless the
++        // "boost" profile or sample.parallel-bootstrap=true is set at runtime.
++        application.addInitializers(new SampleParallelBootstrapInitializer());
+         composeFileDefault()
+                 .ifPresent(composeFile ->
+                         application.setDefaultProperties(Map.of("spring.docker.compose.file", composeFile.toString())));
+diff --git a/bootui-sample-app/src/main/java/io/github/jdubois/bootui/sample/SampleParallelBootstrapInitializer.java b/bootui-sample-app/src/main/java/io/github/jdubois/bootui/sample/SampleParallelBootstrapInitializer.java
+new file mode 100644
+index 0000000..7f1237e
+--- /dev/null
++++ b/bootui-sample-app/src/main/java/io/github/jdubois/bootui/sample/SampleParallelBootstrapInitializer.java
+@@ -0,0 +1,41 @@
++package io.github.jdubois.bootui.sample;
++
++import io.github.jdubois.springbooster.ParallelBootstrapBeanFactoryPostProcessor;
++import io.github.jdubois.springbooster.ParallelBootstrapSettings;
++import org.springframework.context.ApplicationContextInitializer;
++import org.springframework.context.ConfigurableApplicationContext;
++import org.springframework.core.env.Environment;
++
++/**
++ * Opt-in activation of Spring Booster's parallel bean instantiation for the BootUI sample app.
++ *
++ * <p>It registers the library's {@link ParallelBootstrapBeanFactoryPostProcessor} only when the
++ * {@code boost} profile is active or {@code sample.parallel-bootstrap=true} is set. Activation is
++ * driven by a property (rather than the {@code boost} profile) in the benchmark so the same jar can
++ * serve both variants while keeping the default {@code dev} profile active (H2 + in-memory cache).
++ */
++public class SampleParallelBootstrapInitializer
++        implements ApplicationContextInitializer<ConfigurableApplicationContext> {
++
++    @Override
++    public void initialize(ConfigurableApplicationContext applicationContext) {
++        Environment environment = applicationContext.getEnvironment();
++        boolean enabled = environment.matchesProfiles("boost")
++                || Boolean.parseBoolean(environment.getProperty("sample.parallel-bootstrap", "false"));
++        if (!enabled) {
++            return;
++        }
++        // Third benchmark variant: also background mutually-independent consumers of a
++        // shared, fully-constructed infrastructure leaf (Flyway + Liquibase over the same
++        // DataSource). This needs backgroundFactoryMethodBeans (so the @Bean migration
++        // engines become eligible) plus the completed-leaf barrier relaxation.
++        boolean sharedInfra =
++                Boolean.parseBoolean(environment.getProperty("sample.shared-infra-consumers", "false"));
++        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
++                .threadNamePrefix("sample-boot-")
++                .backgroundFactoryMethodBeans(sharedInfra)
++                .backgroundSharedInfraConsumers(sharedInfra)
++                .build();
++        applicationContext.addBeanFactoryPostProcessor(new ParallelBootstrapBeanFactoryPostProcessor(settings));
++    }
++}

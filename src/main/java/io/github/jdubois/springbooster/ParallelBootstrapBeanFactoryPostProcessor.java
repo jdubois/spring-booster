@@ -90,6 +90,19 @@ public class ParallelBootstrapBeanFactoryPostProcessor
 
     private static final Log logger = LogFactory.getLog(ParallelBootstrapBeanFactoryPostProcessor.class);
 
+    /**
+     * Bean definition attribute set by Spring's {@code ConfigurationClassPostProcessor}
+     * to mark a configuration class. The value is {@link #CONFIGURATION_CLASS_FULL} or
+     * {@link #CONFIGURATION_CLASS_LITE}. Referenced by its stable string value because
+     * the declaring {@code ConfigurationClassUtils} type is not public API.
+     */
+    private static final String CONFIGURATION_CLASS_ATTRIBUTE =
+            "org.springframework.context.annotation.ConfigurationClassPostProcessor.configurationClass";
+
+    private static final String CONFIGURATION_CLASS_FULL = "full";
+
+    private static final String CONFIGURATION_CLASS_LITE = "lite";
+
     private final ParallelBootstrapSettings settings;
 
     /**
@@ -183,8 +196,11 @@ public class ParallelBootstrapBeanFactoryPostProcessor
         // caller has opted in to backgrounding factory-method beans, co-locate every
         // @Bean bean with its configuration class so the bootstrap stays safe against the
         // dynamic, by-type lookups that configuration classes perform on the main thread.
-        BeanDependencyGraph graph =
-                BeanDependencyGraph.build(beanFactory, allNames, !this.settings.isBackgroundFactoryMethodBeans());
+        BeanDependencyGraph graph = BeanDependencyGraph.build(
+                beanFactory,
+                allNames,
+                !this.settings.isBackgroundFactoryMethodBeans(),
+                this.settings.isDeferProviderEdges());
         Set<String> cyclic = graph.beansInCycles();
         Set<String> forcedMainline = collectForcedMainlineBeans(beanFactory);
 
@@ -197,10 +213,16 @@ public class ParallelBootstrapBeanFactoryPostProcessor
         }
 
         // Every node that is not eligible runs on the main thread; propagate that
-        // constraint across sync edges so no sync edge crosses the boundary.
+        // constraint across sync edges so no sync edge crosses the boundary. When the
+        // shared-infrastructure relaxation is enabled, completed-leaf barriers are exempted
+        // from propagating mainline-ness to their pure consumers (see
+        // collectCompletedLeafBarriers).
         Set<String> mainline = new LinkedHashSet<>(graph.getNodes());
         mainline.removeAll(eligible);
-        propagateMainline(graph, eligible, mainline);
+        Set<String> barriers = this.settings.isBackgroundSharedInfraConsumers()
+                ? collectCompletedLeafBarriers(graph, eligible, cyclic, forcedMainline)
+                : Collections.emptySet();
+        propagateMainline(graph, eligible, mainline, barriers);
 
         List<String> candidates = new ArrayList<>();
         for (String beanName : singletons) {
@@ -215,8 +237,21 @@ public class ParallelBootstrapBeanFactoryPostProcessor
      * Iteratively reclassify as main-thread any eligible bean that is joined by a sync
      * edge (in either direction) to a bean already known to run on the main thread,
      * until a fixpoint is reached.
+     *
+     * <p>The {@code barriers} set carves out the single safe exception: a
+     * <em>completed-leaf barrier</em> does not propagate its mainline-ness to the beans
+     * that <em>depend on it</em> (the barrier&rarr;dependent direction), because the
+     * barrier is a terminal infrastructure singleton the framework finishes on the main
+     * thread before those dependents are constructed, and they only read it. Because a
+     * dependent {@code D} keeps the barrier {@code B} as a construction dependency
+     * ({@code B} is an outgoing edge of {@code D} in the full dependency graph), {@code B}
+     * is ordered strictly before {@code D} in the topological layering, so "completed
+     * before fan-out" holds structurally. The opposite direction &mdash; a main-thread
+     * bean that <em>depends on</em> a candidate &mdash; is never exempted, as that is the
+     * genuine in-flight by-type pull.
      */
-    private static void propagateMainline(BeanDependencyGraph graph, Set<String> eligible, Set<String> mainline) {
+    private static void propagateMainline(
+            BeanDependencyGraph graph, Set<String> eligible, Set<String> mainline, Set<String> barriers) {
         Map<String, Set<String>> dependents = new HashMap<>();
         for (String node : graph.getNodes()) {
             for (String dependency : graph.getSyncDependencies(node)) {
@@ -228,9 +263,23 @@ public class ParallelBootstrapBeanFactoryPostProcessor
         Deque<String> worklist = new ArrayDeque<>(mainline);
         while (!worklist.isEmpty()) {
             String current = worklist.poll();
-            Set<String> neighbors = new LinkedHashSet<>(graph.getSyncDependencies(current));
-            neighbors.addAll(dependents.getOrDefault(current, Collections.emptySet()));
-            for (String neighbor : neighbors) {
+            // Direction 1: current depends on neighbor. A main-thread bean pulls its
+            // dependency on its own thread, so the dependency must also run on the main
+            // thread. This direction is never exempted.
+            for (String neighbor : graph.getSyncDependencies(current)) {
+                if (eligible.remove(neighbor)) {
+                    mainline.add(neighbor);
+                    worklist.add(neighbor);
+                }
+            }
+            // Direction 2: neighbor depends on current. Normally the neighbor is pulled
+            // onto the main thread too, but if current is a completed-leaf barrier the
+            // neighbor merely reads an already-finished singleton and may stay backgrounded.
+            boolean currentIsBarrier = barriers.contains(current);
+            for (String neighbor : dependents.getOrDefault(current, Collections.emptySet())) {
+                if (currentIsBarrier) {
+                    continue;
+                }
                 if (eligible.remove(neighbor)) {
                     mainline.add(neighbor);
                     worklist.add(neighbor);
@@ -240,11 +289,67 @@ public class ParallelBootstrapBeanFactoryPostProcessor
     }
 
     /**
-     * Collect the names of beans that the framework force-instantiates on the main
-     * thread before backgrounding a dependent: the factory bean of any bean (for
-     * example a {@code @Configuration} class hosting {@code @Bean} methods) and the
-     * target of any {@code depends-on} declaration. Such beans cannot themselves be
-     * background candidates.
+     * Identify the <em>completed-leaf barriers</em>: main-thread beans across which
+     * mainline-ness is not propagated to their dependents (see {@link #propagateMainline}).
+     *
+     * <p>A bean {@code B} qualifies only when every condition holds:
+     * <ol>
+     * <li><b>Force-instantiated on the main thread &amp; acyclic.</b> {@code B} is in the
+     * forced-mainline set (a factory bean, a {@code depends-on} target, or a configuration
+     * class) and is not part of a dependency cycle, so the framework is guaranteed to
+     * create it on the main thread.</li>
+     * <li><b>Leaf with respect to background candidates.</b> {@code B} has no sync
+     * dependency on any currently-eligible (backgroundable) bean, so its own construction
+     * is self-contained and cannot pull a background bean mid-creation.</li>
+     * </ol>
+     *
+     * <p>The set is computed from the <em>initial</em> eligible set (before propagation),
+     * which is the conservative choice: an eligible sync dependency only ever disqualifies
+     * a would-be barrier, never the reverse. Dependents reach the barrier through the
+     * framework's ordinary, background-aware singleton path, and the barrier&rarr;dependent
+     * edge keeps the barrier ordered strictly earlier in the layering, which together
+     * establish that the dependent only reads an already-completed singleton.
+     */
+    private static Set<String> collectCompletedLeafBarriers(
+            BeanDependencyGraph graph, Set<String> eligible, Set<String> cyclic, Set<String> forcedMainline) {
+        Set<String> barriers = new LinkedHashSet<>();
+        for (String node : graph.getNodes()) {
+            if (!forcedMainline.contains(node) || cyclic.contains(node)) {
+                continue;
+            }
+            boolean leaf = true;
+            for (String dependency : graph.getSyncDependencies(node)) {
+                if (eligible.contains(dependency)) {
+                    leaf = false;
+                    break;
+                }
+            }
+            if (leaf) {
+                barriers.add(node);
+            }
+        }
+        return barriers;
+    }
+
+    /**
+     * Collect the names of beans that must always be instantiated on the main thread,
+     * never in the background:
+     * <ul>
+     * <li>the factory bean of any bean (for example a {@code @Configuration} class
+     * hosting {@code @Bean} methods) and the target of any {@code depends-on}
+     * declaration, both of which the framework force-instantiates on the main thread
+     * before backgrounding a dependent; and</li>
+     * <li>every {@code @Configuration} / configuration-class bean itself (full or
+     * lite), because configuration classes are routinely retrieved dynamically by type
+     * or by annotation on the main thread &mdash; for example through
+     * {@code getBeansWithAnnotation(...)} &mdash; in ways no static analysis can see. A
+     * configuration class that registers no eligible {@code @Bean} singleton would
+     * otherwise not be reached by the factory&rarr;bean co-location rule and could be
+     * backgrounded, triggering a {@code BeanCurrentlyInCreationException} when it is
+     * pulled on the main thread (observed with Spring Security's
+     * {@code EnableWebSecurityConfiguration}, which is fetched via
+     * {@code getBeansWithAnnotation(EnableWebSecurity.class)}).</li>
+     * </ul>
      */
     private static Set<String> collectForcedMainlineBeans(ConfigurableListableBeanFactory beanFactory) {
         Set<String> forced = new HashSet<>();
@@ -260,8 +365,29 @@ public class ParallelBootstrapBeanFactoryPostProcessor
             if (dependsOn != null) {
                 Collections.addAll(forced, dependsOn);
             }
+            // The configuration-class marker is set by ConfigurationClassPostProcessor on
+            // the originally registered definition, which getMergedBeanDefinition does not
+            // necessarily carry over, so consult the raw definition for it.
+            if (isConfigurationClassBean(safeGetBeanDefinition(beanFactory, beanName))) {
+                forced.add(beanName);
+            }
         }
         return forced;
+    }
+
+    /**
+     * Whether the given bean definition denotes a configuration class (a
+     * {@code @Configuration} class, full or lite) as marked by Spring's
+     * {@code ConfigurationClassPostProcessor}. Such beans are kept on the main thread
+     * because they are frequently resolved dynamically &mdash; by type or by annotation
+     * &mdash; during context refresh.
+     */
+    private static boolean isConfigurationClassBean(@Nullable BeanDefinition bd) {
+        if (bd == null) {
+            return false;
+        }
+        Object attribute = bd.getAttribute(CONFIGURATION_CLASS_ATTRIBUTE);
+        return CONFIGURATION_CLASS_FULL.equals(attribute) || CONFIGURATION_CLASS_LITE.equals(attribute);
     }
 
     private boolean isSafeCandidate(

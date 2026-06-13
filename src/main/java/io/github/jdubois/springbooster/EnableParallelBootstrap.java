@@ -93,4 +93,30 @@ public @interface EnableParallelBootstrap {
      * @see ParallelBootstrapSettings#isBackgroundFactoryMethodBeans()
      */
     boolean backgroundFactoryMethodBeans() default false;
+
+    /**
+     * Whether by-type dependency edges reached only through an {@code ObjectProvider},
+     * {@code ObjectFactory} or {@code Provider} wrapper, or through a {@code @Lazy}
+     * injection point, are treated as <em>deferred</em> and excluded from the
+     * connectivity-safe boundary. Defaults to {@code false}. Enabling this lets a
+     * main-thread bean depend on a background subtree purely through a provider /
+     * {@code @Lazy} without dragging that subtree onto the main thread, at the cost of
+     * assuming such handles are dereferenced lazily (after construction).
+     * @return whether provider / {@code @Lazy} edges are deferred
+     * @see ParallelBootstrapSettings#isDeferProviderEdges()
+     */
+    boolean deferProviderEdges() default false;
+
+    /**
+     * Whether beans that depend only on completed-leaf main-thread infrastructure
+     * singletons may still be backgrounded. Defaults to {@code false}. Set to
+     * {@code true} to let mutually independent consumers of a shared, terminal
+     * infrastructure bean (such as a {@code DataSource} feeding both Flyway and
+     * Liquibase) run concurrently even though that infrastructure bean stays on the
+     * main thread. Only the barrier&rarr;dependent direction is relaxed, and a violated
+     * assumption fails fast and falls back to sequential bootstrap.
+     * @return whether shared-infrastructure consumers may be backgrounded
+     * @see ParallelBootstrapSettings#isBackgroundSharedInfraConsumers()
+     */
+    boolean backgroundSharedInfraConsumers() default false;
 }

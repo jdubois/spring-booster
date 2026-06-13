@@ -77,6 +77,14 @@ class ParallelBootstrapRegistrar implements ImportBeanDefinitionRegistrar {
             if (backgroundFactoryMethodBeans instanceof Boolean backgroundValue) {
                 builder.backgroundFactoryMethodBeans(backgroundValue);
             }
+            Object deferProviderEdges = attributes.get("deferProviderEdges");
+            if (deferProviderEdges instanceof Boolean deferValue) {
+                builder.deferProviderEdges(deferValue);
+            }
+            Object backgroundSharedInfraConsumers = attributes.get("backgroundSharedInfraConsumers");
+            if (backgroundSharedInfraConsumers instanceof Boolean sharedInfraValue) {
+                builder.backgroundSharedInfraConsumers(sharedInfraValue);
+            }
         }
         return builder.build();
     }

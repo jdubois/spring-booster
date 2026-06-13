@@ -35,6 +35,9 @@ import org.springframework.beans.factory.support.RootBeanDefinition;
  */
 class ParallelBootstrapBeanFactoryPostProcessorTests {
 
+    private static final String CONFIGURATION_CLASS_ATTRIBUTE =
+            "org.springframework.context.annotation.ConfigurationClassPostProcessor.configurationClass";
+
     private final DefaultListableBeanFactory beanFactory = new DefaultListableBeanFactory();
 
     @Test
@@ -149,6 +152,24 @@ class ParallelBootstrapBeanFactoryPostProcessorTests {
     }
 
     @Test
+    void backgroundsBeanPulledViaObjectProviderWhenProviderEdgesAreDeferred() {
+        this.beanFactory.registerBeanDefinition("leaf", new RootBeanDefinition(Leaf.class));
+        this.beanFactory.registerBeanDefinition("consumer", new RootBeanDefinition(ProviderConsumer.class));
+        // "consumer" stays on the main thread but reaches "leaf" only through an
+        // ObjectProvider. With provider edges deferred, that edge no longer crosses the
+        // boundary, so "leaf" is free to be backgrounded.
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                .candidateFilter(name -> name.equals("leaf"))
+                .deferProviderEdges(true)
+                .build();
+
+        List<String> candidates =
+                new ParallelBootstrapBeanFactoryPostProcessor(settings).planCandidates(this.beanFactory);
+
+        assertThat(candidates).containsExactly("leaf");
+    }
+
+    @Test
     void backgroundsByTypeConnectedBeansWhenAllAreEligible() {
         this.beanFactory.registerBeanDefinition("leaf", new RootBeanDefinition(Leaf.class));
         this.beanFactory.registerBeanDefinition("consumer", new RootBeanDefinition(ConstructorConsumer.class));
@@ -156,6 +177,32 @@ class ParallelBootstrapBeanFactoryPostProcessorTests {
         List<String> candidates = new ParallelBootstrapBeanFactoryPostProcessor().planCandidates(this.beanFactory);
 
         assertThat(candidates).containsExactlyInAnyOrder("leaf", "consumer");
+    }
+
+    @Test
+    void doesNotBackgroundFullConfigurationClassBeans() {
+        RootBeanDefinition config = new RootBeanDefinition(Object.class);
+        config.setAttribute(CONFIGURATION_CLASS_ATTRIBUTE, "full");
+        this.beanFactory.registerBeanDefinition("config", config);
+        registerSingleton("included");
+
+        List<String> candidates = new ParallelBootstrapBeanFactoryPostProcessor().planCandidates(this.beanFactory);
+
+        // A configuration class with no @Bean singletons (so it is not reached by the
+        // factory->bean co-location rule) must still stay on the main thread, because it
+        // can be pulled dynamically by type or by annotation (e.g. getBeansWithAnnotation).
+        assertThat(candidates).contains("included").doesNotContain("config");
+    }
+
+    @Test
+    void doesNotBackgroundLiteConfigurationClassBeans() {
+        RootBeanDefinition config = new RootBeanDefinition(Object.class);
+        config.setAttribute(CONFIGURATION_CLASS_ATTRIBUTE, "lite");
+        this.beanFactory.registerBeanDefinition("config", config);
+
+        List<String> candidates = new ParallelBootstrapBeanFactoryPostProcessor().planCandidates(this.beanFactory);
+
+        assertThat(candidates).doesNotContain("config");
     }
 
     @Test
@@ -180,8 +227,103 @@ class ParallelBootstrapBeanFactoryPostProcessorTests {
         assertThat(isBackgroundInit("a")).isFalse();
     }
 
+    @Test
+    void serializesSharedInfraConsumersByDefault() {
+        // dataSource is a shared, terminal main-thread leaf (forced mainline by being a
+        // depends-on target). Two independent consumers read it by reference. By default
+        // the connectivity-safe rule pulls both consumers onto the main thread.
+        registerSingleton("dataSource");
+        registerWithDependsOn("entityManagerFactory", "dataSource");
+        registerWithConstructorRef("flyway", "dataSource");
+        registerWithConstructorRef("liquibase", "dataSource");
+
+        List<String> candidates = new ParallelBootstrapBeanFactoryPostProcessor().planCandidates(this.beanFactory);
+
+        assertThat(candidates).doesNotContain("flyway", "liquibase", "dataSource");
+    }
+
+    @Test
+    void backgroundsSharedInfraConsumersWhenEnabled() {
+        registerSingleton("dataSource");
+        registerWithDependsOn("entityManagerFactory", "dataSource");
+        registerWithConstructorRef("flyway", "dataSource");
+        registerWithConstructorRef("liquibase", "dataSource");
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                .backgroundSharedInfraConsumers(true)
+                .build();
+
+        List<String> candidates =
+                new ParallelBootstrapBeanFactoryPostProcessor(settings).planCandidates(this.beanFactory);
+
+        // The two independent consumers may now run concurrently, while the shared
+        // DataSource barrier itself stays on the main thread.
+        assertThat(candidates).contains("flyway", "liquibase").doesNotContain("dataSource");
+    }
+
+    @Test
+    void stillForcesConsumerMainlineWhenAMainThreadBeanDependsOnIt() {
+        // Reverse direction: a main-thread bean (puller) depends on the consumer, so the
+        // consumer is pulled by type during the puller's main-thread creation and must
+        // stay mainline even with the relaxation enabled.
+        registerSingleton("dataSource");
+        registerWithDependsOn("entityManagerFactory", "dataSource");
+        registerWithConstructorRef("flyway", "dataSource");
+        registerWithConstructorRef("puller", "flyway");
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                .backgroundSharedInfraConsumers(true)
+                .candidateFilter(name -> !name.equals("puller"))
+                .build();
+
+        List<String> candidates =
+                new ParallelBootstrapBeanFactoryPostProcessor(settings).planCandidates(this.beanFactory);
+
+        assertThat(candidates).doesNotContain("flyway");
+    }
+
+    @Test
+    void doesNotTreatNonLeafAsBarrier() {
+        // dataSource itself depends on a backgroundable bean, so it is not a completed
+        // leaf and cannot be a barrier; its consumer stays mainline.
+        registerSingleton("infra");
+        registerWithConstructorRef("dataSource", "infra");
+        registerWithDependsOn("entityManagerFactory", "dataSource");
+        registerWithConstructorRef("flyway", "dataSource");
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                .backgroundSharedInfraConsumers(true)
+                .build();
+
+        List<String> candidates =
+                new ParallelBootstrapBeanFactoryPostProcessor(settings).planCandidates(this.beanFactory);
+
+        assertThat(candidates).doesNotContain("flyway");
+    }
+
+    @Test
+    void doesNotTreatCyclicBeanAsBarrier() {
+        // dataSource participates in a dependency cycle, so it is not a barrier; its
+        // consumer stays mainline.
+        registerWithConstructorRef("dataSource", "other");
+        registerWithConstructorRef("other", "dataSource");
+        registerWithDependsOn("entityManagerFactory", "dataSource");
+        registerWithConstructorRef("flyway", "dataSource");
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                .backgroundSharedInfraConsumers(true)
+                .build();
+
+        List<String> candidates =
+                new ParallelBootstrapBeanFactoryPostProcessor(settings).planCandidates(this.beanFactory);
+
+        assertThat(candidates).doesNotContain("flyway");
+    }
+
     private void registerSingleton(String beanName) {
         this.beanFactory.registerBeanDefinition(beanName, new RootBeanDefinition(Object.class));
+    }
+
+    private void registerWithDependsOn(String beanName, String... dependsOn) {
+        RootBeanDefinition bd = new RootBeanDefinition(Object.class);
+        bd.setDependsOn(dependsOn);
+        this.beanFactory.registerBeanDefinition(beanName, bd);
     }
 
     private void registerWithConstructorRef(String beanName, String ref) {

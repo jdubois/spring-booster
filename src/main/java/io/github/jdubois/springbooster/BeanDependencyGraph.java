@@ -23,6 +23,7 @@ import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -127,19 +128,48 @@ final class BeanDependencyGraph {
             ConfigurableListableBeanFactory beanFactory,
             Collection<String> beanNames,
             boolean colocateFactoryMethodBeans) {
+        return build(beanFactory, beanNames, colocateFactoryMethodBeans, false);
+    }
+
+    /**
+     * Build a dependency graph from the given bean factory, restricted to the
+     * supplied set of bean names (typically all registered bean definitions). Edges
+     * that point to beans outside the supplied set are ignored.
+     * @param beanFactory the bean factory to introspect
+     * @param beanNames the bean names to include as graph nodes
+     * @param colocateFactoryMethodBeans whether to add factory&rarr;bean co-location
+     * edges that keep every {@code @Bean} bean on its configuration's thread (see
+     * {@link #addFactoryColocationEdges})
+     * @param deferProviderEdges whether by-type edges reached only through an
+     * {@code ObjectProvider}/{@code ObjectFactory}/{@code Provider} wrapper or a
+     * {@code @Lazy} injection point are treated as <em>deferred</em> &mdash; kept in the
+     * full dependency set (for cycle detection and layering) but excluded from the
+     * <em>sync</em> connectivity view, so they no longer constrain the
+     * background/mainline boundary
+     * @return the resulting dependency graph
+     */
+    static BeanDependencyGraph build(
+            ConfigurableListableBeanFactory beanFactory,
+            Collection<String> beanNames,
+            boolean colocateFactoryMethodBeans,
+            boolean deferProviderEdges) {
         Set<String> nodes = new LinkedHashSet<>(beanNames);
         Map<String, Set<String>> dependencies = new HashMap<>(nodes.size());
         Map<String, Set<String>> syncDependencies = new HashMap<>(nodes.size());
         for (String beanName : nodes) {
             Set<String> edges = new LinkedHashSet<>();
             Set<String> syncEdges = new LinkedHashSet<>();
+            Set<String> deferredEdges = new LinkedHashSet<>();
             BeanDefinition mbd = safeGetMergedBeanDefinition(beanFactory, beanName);
             if (mbd != null) {
                 collectEdges(mbd, edges, syncEdges);
                 // By-type / @Autowired / ObjectProvider edges the declarations do not reveal.
-                AutowiredEdgeResolver.collect(beanFactory, beanName, mbd, syncEdges);
+                AutowiredEdgeResolver.collect(beanFactory, beanName, mbd, syncEdges, deferredEdges, deferProviderEdges);
             }
             edges.addAll(syncEdges);
+            // Deferred edges remain genuine construction dependencies for cycle detection
+            // and layering, but are excluded from the sync connectivity boundary below.
+            edges.addAll(deferredEdges);
             // Keep only edges that point to known nodes; self-references are retained
             // so that cycle detection can flag them.
             edges.retainAll(nodes);
@@ -180,6 +210,24 @@ final class BeanDependencyGraph {
      * definitions &mdash; are reached only through the framework's ordinary singleton path,
      * which honours background initialization.
      *
+     * <p>The co-location edges are added only when at least one configuration in the
+     * context {@link DynamicConfigurationDetector#isDynamicConfiguration classifies as
+     * <em>dynamic</em>} &mdash; one that actually performs (or could perform) invisible
+     * by-type lookups. Such a lookup targets a {@code @Bean} bean <em>by type</em> and is
+     * not restricted to the dynamic configuration's own beans: it may pull a {@code @Bean}
+     * declared by a different, even <em>pure</em>, configuration (Spring Data's dynamic
+     * {@code SpringDataWebConfiguration}, for example, pulls the {@code sortCustomizer}
+     * {@code @Bean} of the pure {@code DataWebAutoConfiguration} from its
+     * {@code WebMvcConfigurer.addArgumentResolvers} callback). Co-locating only the dynamic
+     * configuration's own beans is therefore not safe; when any dynamic configuration is
+     * present, <em>every</em> {@code @Bean} factory-method bean is co-located. The detector
+     * errs towards {@code dynamic}, so an unrecognised configuration shape keeps the whole
+     * context safely co-located.
+     *
+     * <p>When <em>no</em> configuration is dynamic, no such invisible lookup can occur, so
+     * every {@code @Bean} bean (and the subtrees rooted at it) is left free to be
+     * backgrounded and no co-location edge is added.
+     *
      * <p>The edge is recorded only in the sync-connectivity view used by the planner, not
      * as a construction dependency, so it never introduces a spurious cycle or perturbs
      * the topological layering (the genuine dependency runs the opposite direction: the
@@ -187,17 +235,49 @@ final class BeanDependencyGraph {
      */
     private static void addFactoryColocationEdges(
             ConfigurableListableBeanFactory beanFactory, Set<String> nodes, Map<String, Set<String>> syncDependencies) {
+        // Group every factory-method bean under its configuration (factory) bean, and
+        // record whether any configuration in the context is dynamic.
+        Map<String, Set<String>> beansByFactory = new LinkedHashMap<>();
         for (String beanName : nodes) {
             BeanDefinition mbd = safeGetMergedBeanDefinition(beanFactory, beanName);
             if (mbd == null) {
                 continue;
             }
             String factoryBeanName = mbd.getFactoryBeanName();
-            if (factoryBeanName != null && !factoryBeanName.equals(beanName) && nodes.contains(factoryBeanName)) {
-                syncDependencies
-                        .computeIfAbsent(factoryBeanName, key -> new LinkedHashSet<>())
-                        .add(beanName);
+            // Skip beans that are not factory-method beans (no factory bean), the factory
+            // bean itself (self-reference), or beans whose factory is outside the graph.
+            if (factoryBeanName == null || factoryBeanName.equals(beanName) || !nodes.contains(factoryBeanName)) {
+                continue;
             }
+            beansByFactory
+                    .computeIfAbsent(factoryBeanName, key -> new LinkedHashSet<>())
+                    .add(beanName);
+        }
+
+        boolean anyDynamicConfiguration = beansByFactory.keySet().stream()
+                .anyMatch(factoryBeanName ->
+                        DynamicConfigurationDetector.isDynamicConfiguration(beanFactory, factoryBeanName));
+        if (!anyDynamicConfiguration) {
+            // No configuration performs invisible by-type lookups, so no @Bean bean can be
+            // pulled by type on the main thread by a configuration that static analysis
+            // cannot see through. Every @Bean bean (and the subtree rooted at it) is then
+            // free to be backgrounded: add no co-location edge.
+            return;
+        }
+
+        // At least one dynamic configuration is present. A dynamic configuration can resolve
+        // @Bean beans of OTHER configurations by type, on the main thread, through lookups no
+        // static analysis can see (Spring Data's SpringDataWebConfiguration, for example,
+        // dereferences an ObjectProvider/Lazy of SortHandlerMethodArgumentResolverCustomizer
+        // from its WebMvcConfigurer.addArgumentResolvers callback, pulling the sortCustomizer
+        // @Bean declared by the pure DataWebAutoConfiguration). Because such a lookup targets a
+        // bean by type and is not restricted to the dynamic configuration's own @Bean beans,
+        // co-locating only the dynamic configuration's beans is not enough: every @Bean
+        // factory-method bean must stay on its configuration's (main) thread.
+        for (Map.Entry<String, Set<String>> entry : beansByFactory.entrySet()) {
+            syncDependencies
+                    .computeIfAbsent(entry.getKey(), key -> new LinkedHashSet<>())
+                    .addAll(entry.getValue());
         }
     }
 
