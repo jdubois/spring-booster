@@ -167,6 +167,30 @@ class ParallelBootstrapIntegrationTests {
         }
     }
 
+    @Test
+    void independentConsumersOfSharedInfraRunConcurrentlyWhenEnabled() {
+        SharedInfraConfig.consumerThreads.clear();
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            // sharedInfra is a terminal main-thread leaf (forced mainline by a @DependsOn
+            // target). consumerA and consumerB are mutually independent and each only read
+            // it -- the Flyway/Liquibase-over-a-shared-DataSource shape. With the
+            // relaxation enabled they may be backgrounded and run concurrently while
+            // sharedInfra itself stays on the main thread.
+            ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                    .poolSize(4)
+                    .backgroundFactoryMethodBeans(true)
+                    .backgroundSharedInfraConsumers(true)
+                    .build();
+            new ParallelBootstrapApplicationContextInitializer(settings).initialize(context);
+            context.register(SharedInfraConfig.class);
+            context.refresh();
+
+            assertThat(context.getBean("consumerA")).isNotNull();
+            assertThat(context.getBean("consumerB")).isNotNull();
+            assertThat(SharedInfraConfig.consumerThreads).anyMatch(name -> name.startsWith("parallel-bootstrap-"));
+        }
+    }
+
     @Configuration(proxyBeanMethods = false)
     @EnableParallelBootstrap
     static class EnabledConfig {
@@ -278,6 +302,40 @@ class ParallelBootstrapIntegrationTests {
 
         ByTypeConsumer(Leaf leaf) {}
     }
+
+    @Configuration(proxyBeanMethods = false)
+    static class SharedInfraConfig {
+
+        static final Set<String> consumerThreads = ConcurrentHashMap.newKeySet();
+
+        // A terminal infrastructure leaf standing in for a shared DataSource.
+        @Bean
+        SharedInfra sharedInfra() {
+            return new SharedInfra();
+        }
+
+        // Forces sharedInfra onto the main thread (as Spring Boot's
+        // EntityManagerFactoryDependsOnPostProcessor does for the real DataSource).
+        @Bean
+        @org.springframework.context.annotation.DependsOn("sharedInfra")
+        Object entityManagerFactory() {
+            return new Object();
+        }
+
+        @Bean
+        Object consumerA(SharedInfra sharedInfra) {
+            consumerThreads.add(Thread.currentThread().getName());
+            return new Object();
+        }
+
+        @Bean
+        Object consumerB(SharedInfra sharedInfra) {
+            consumerThreads.add(Thread.currentThread().getName());
+            return new Object();
+        }
+    }
+
+    static class SharedInfra {}
 
     static class ServiceA {}
 

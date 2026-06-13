@@ -93,4 +93,17 @@ public @interface EnableParallelBootstrap {
      * @see ParallelBootstrapSettings#isBackgroundFactoryMethodBeans()
      */
     boolean backgroundFactoryMethodBeans() default false;
+
+    /**
+     * Whether beans that depend only on completed-leaf main-thread infrastructure
+     * singletons may still be backgrounded. Defaults to {@code false}. Set to
+     * {@code true} to let mutually independent consumers of a shared, terminal
+     * infrastructure bean (such as a {@code DataSource} feeding both Flyway and
+     * Liquibase) run concurrently even though that infrastructure bean stays on the
+     * main thread. Only the barrier&rarr;dependent direction is relaxed, and a violated
+     * assumption fails fast and falls back to sequential bootstrap.
+     * @return whether shared-infrastructure consumers may be backgrounded
+     * @see ParallelBootstrapSettings#isBackgroundSharedInfraConsumers()
+     */
+    boolean backgroundSharedInfraConsumers() default false;
 }

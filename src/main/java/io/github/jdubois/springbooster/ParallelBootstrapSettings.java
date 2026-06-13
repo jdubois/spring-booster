@@ -52,18 +52,22 @@ public final class ParallelBootstrapSettings {
 
     private final boolean backgroundFactoryMethodBeans;
 
+    private final boolean backgroundSharedInfraConsumers;
+
     private ParallelBootstrapSettings(
             boolean enabled,
             int poolSize,
             String threadNamePrefix,
             Predicate<String> candidateFilter,
-            boolean backgroundFactoryMethodBeans) {
+            boolean backgroundFactoryMethodBeans,
+            boolean backgroundSharedInfraConsumers) {
 
         this.enabled = enabled;
         this.poolSize = poolSize;
         this.threadNamePrefix = threadNamePrefix;
         this.candidateFilter = candidateFilter;
         this.backgroundFactoryMethodBeans = backgroundFactoryMethodBeans;
+        this.backgroundSharedInfraConsumers = backgroundSharedInfraConsumers;
     }
 
     /**
@@ -125,6 +129,38 @@ public final class ParallelBootstrapSettings {
     }
 
     /**
+     * Whether beans that depend only on <em>completed-leaf</em> main-thread
+     * infrastructure singletons may still be backgrounded.
+     * <p>Defaults to {@code false}. By default the planner is
+     * <em>connectivity-safe</em>: any bean joined by a sync dependency edge &mdash; in
+     * either direction &mdash; to a bean that runs on the main thread is itself kept on
+     * the main thread. That conservative closure also pulls back beans whose <em>only</em>
+     * link to the main thread is a read of a shared, terminal infrastructure singleton
+     * (a {@code DataSource}/connection pool, for example) that the framework fully
+     * constructs on the main thread before those beans are touched. The canonical case is
+     * two mutually independent, heavyweight consumers of one shared {@code DataSource}
+     * (such as Flyway and Liquibase): they could run concurrently, but the default rule
+     * serializes them because both read the main-thread {@code DataSource}.
+     * <p>Set to {@code true} to relax that one case: a main-thread bean is treated as a
+     * <em>completed-leaf barrier</em> &mdash; across which mainline-ness is not propagated
+     * to its dependents &mdash; when it is force-instantiated on the main thread (a factory
+     * bean, a {@code depends-on} target, or a configuration class), is not part of a
+     * dependency cycle, and itself has no sync dependency on any backgroundable bean (so it
+     * is a genuine leaf that completes before its dependents fan out). Only the
+     * barrier&rarr;dependent direction is exempted; a main-thread bean that <em>depends on</em>
+     * a candidate still forces that candidate onto the main thread, because that is the
+     * genuine in-flight pull. This relaxation only ever <em>removes</em> propagation, never
+     * adds dependency edges, so it cannot introduce cycles or perturb the topological
+     * layering. As with {@link #isBackgroundFactoryMethodBeans()}, a violated assumption
+     * fails fast with {@code BeanCurrentlyInCreationException} and the bootstrap falls back
+     * to sequential instantiation.
+     * @return whether shared-infrastructure consumers may be backgrounded
+     */
+    public boolean isBackgroundSharedInfraConsumers() {
+        return this.backgroundSharedInfraConsumers;
+    }
+
+    /**
      * Create settings with sensible defaults: enabled, a pool size of twice the
      * number of available processors, the {@code parallel-bootstrap-} thread prefix,
      * and a candidate filter that accepts every bean.
@@ -179,6 +215,8 @@ public final class ParallelBootstrapSettings {
         private Predicate<String> candidateFilter = beanName -> true;
 
         private boolean backgroundFactoryMethodBeans = false;
+
+        private boolean backgroundSharedInfraConsumers = false;
 
         private Builder() {}
 
@@ -244,6 +282,22 @@ public final class ParallelBootstrapSettings {
         }
 
         /**
+         * Set whether beans that depend only on completed-leaf main-thread
+         * infrastructure singletons may still be backgrounded. Defaults to {@code false}.
+         * Set to {@code true} to allow mutually independent consumers of a shared,
+         * terminal infrastructure bean (such as a {@code DataSource}) to run concurrently
+         * even though that infrastructure bean stays on the main thread.
+         * @param backgroundSharedInfraConsumers whether shared-infrastructure consumers may
+         * be backgrounded
+         * @return this builder
+         * @see ParallelBootstrapSettings#isBackgroundSharedInfraConsumers()
+         */
+        public Builder backgroundSharedInfraConsumers(boolean backgroundSharedInfraConsumers) {
+            this.backgroundSharedInfraConsumers = backgroundSharedInfraConsumers;
+            return this;
+        }
+
+        /**
          * Build the immutable {@link ParallelBootstrapSettings} instance.
          * @return the immutable settings instance
          */
@@ -253,7 +307,8 @@ public final class ParallelBootstrapSettings {
                     this.poolSize,
                     this.threadNamePrefix,
                     this.candidateFilter,
-                    this.backgroundFactoryMethodBeans);
+                    this.backgroundFactoryMethodBeans,
+                    this.backgroundSharedInfraConsumers);
         }
     }
 }
