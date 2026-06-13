@@ -113,6 +113,29 @@ class DynamicConfigurationDetectorTests {
                 .isTrue();
     }
 
+    @Test
+    void bytecodeDetectionDowngradesReflectiveFalsePositiveToPure() {
+        // ProviderFieldConfig merely declares an ObjectProvider field and never uses it:
+        // reflectively dynamic, but the bytecode scan proves it performs no lookup, so with
+        // bytecode lookup-detection enabled it is downgraded to pure.
+        register("config", ProviderFieldConfig.class);
+
+        assertThat(DynamicConfigurationDetector.isDynamicConfiguration(this.beanFactory, "config"))
+                .isTrue();
+        assertThat(DynamicConfigurationDetector.isDynamicConfiguration(this.beanFactory, "config", true))
+                .isFalse();
+    }
+
+    @Test
+    void bytecodeDetectionKeepsGenuineLookupDynamic() {
+        // ProviderDereferenceConfig actually dereferences its ObjectProvider, so the
+        // bytecode scan confirms the reflective dynamic classification.
+        register("config", ProviderDereferenceConfig.class);
+
+        assertThat(DynamicConfigurationDetector.isDynamicConfiguration(this.beanFactory, "config", true))
+                .isTrue();
+    }
+
     private void register(String beanName, Class<?> type) {
         this.beanFactory.registerBeanDefinition(beanName, new RootBeanDefinition(type));
     }
@@ -142,6 +165,19 @@ class DynamicConfigurationDetectorTests {
     static class ProviderFieldConfig {
 
         private ObjectProvider<Object> provider;
+    }
+
+    static class ProviderDereferenceConfig {
+
+        private final ObjectProvider<Object> provider;
+
+        ProviderDereferenceConfig(ObjectProvider<Object> provider) {
+            this.provider = provider;
+        }
+
+        Object product() {
+            return this.provider.getObject();
+        }
     }
 
     static class LazyFieldConfig {
