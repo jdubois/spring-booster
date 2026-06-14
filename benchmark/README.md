@@ -38,14 +38,16 @@ own machine; absolute numbers and the sign of the tiny delta will vary.)
 | `petclinic-spring-booster.patch` | The exact Spring Booster integration changes applied to Petclinic. |
 | `measure.sh` | Runs a jar N times and prints each reported "Started … in X seconds" value. |
 | `measure-in-jvm.sh` | Starts the context N times **inside one JVM** and prints each iteration's time — used to prove startup is JIT-dominated. |
+| `measure-coldstart.sh` | Measures **first-run** startup under Spring AOT, CDS and the JDK AOT cache — the levers that actually attack the cold-start cost. |
 | `run-benchmark.sh` | Runs 5× baseline + 5× boosted (plus a warm-up each) and prints the comparison table. |
 | `spring-petclinic/` | The cloned + patched Petclinic checkout (git-ignored; created by `setup.sh`). |
 
 ## How to run
 
 ```bash
-./setup.sh            # one-time: install lib, clone + patch Petclinic, build jar
-./run-benchmark.sh 5  # 5 measured runs per variant (default 5)
+./setup.sh               # one-time: install lib, clone + patch Petclinic, build jar
+./run-benchmark.sh 5     # 5 measured runs per variant (default 5)
+./measure-coldstart.sh 5 # first-run startup under Spring AOT / CDS / JDK AOT cache
 ```
 
 ## How the two variants work
@@ -160,3 +162,60 @@ graph cannot move a number that is set by the JIT, not by the bean wiring. (This
 explains why CDS/AOT and, ultimately, GraalVM native images — which remove most of that
 warm-up — are the high-leverage levers for Spring startup, whereas parallel bootstrap
 helps only when independent, heavyweight *component* beans dominate.)
+
+## Improving the first run: the cold-start levers that actually work
+
+If the first run is dominated by interpretation, class loading and JIT compilation,
+then the way to make it faster is to **attack that machinery directly** — not the bean
+graph. `measure-coldstart.sh` measures the cumulative effect of the proven levers on
+Petclinic, each with the same fresh-JVM-per-run methodology (a fresh JVM *is* a cold
+start):
+
+* **Spring AOT** — `spring-boot:process-aot` generates the bean-definition code at build
+  time, so the first run does far less reflection. Enabled at runtime with
+  `-Dspring.aot.enabled=true`. The AOT classes are inert without that flag, so the same
+  jar is both the plain baseline and the Spring AOT variant.
+* **CDS (Class Data Sharing)** — a memory-mapped archive of parsed classes, so the first
+  run skips most class loading and verification. Built from a one-off training run.
+* **JDK AOT cache** — JDK 24/25's Project Leyden cache (JEP 483/514) extends CDS to also
+  cache *linked* classes; on JDK 25 it is a single-command training step
+  (`-XX:AOTCacheOutput=…`, then `-XX:AOTCache=…`).
+* **Spring AOT + JDK AOT cache** — the two stacked: the strongest non-native combination.
+
+```bash
+./setup.sh               # if not already done
+./measure-coldstart.sh 5 # 5 cold runs per variant (default 5)
+```
+
+Representative result (Temurin 25, Petclinic; absolute numbers vary by machine):
+
+| Variant | Median startup | vs plain |
+|---|---:|---:|
+| Plain (no optimization) | ~5.3 s | (baseline) |
+| Spring AOT | ~4.3 s | ~+19% |
+| CDS (class data sharing) | ~3.0 s | ~+40% |
+| JDK AOT cache | ~2.1 s | ~+60% |
+| Spring AOT + JDK AOT cache | ~1.6 s | ~+71% |
+
+The levers **stack**, because each removes a different slice of the cold-JVM tax —
+Spring AOT cuts reflection, CDS cuts class loading, and the AOT cache adds class linking
+(and, on top of Spring AOT, caches the AOT-generated bootstrap too). Together they take
+Petclinic's first run from ~5.3 s to ~1.6 s **without a native image** and without
+changing a line of application code.
+
+### How this layers with Spring Booster
+
+These cold-start levers and Spring Booster's parallel bootstrap are **orthogonal and
+complementary**:
+
+* **Cold start (first run, JIT-dominated):** use Spring AOT + a CDS/AOT cache. This is
+  where the big wins are for short-lived or scale-to-zero workloads. For the absolute
+  floor (tens of milliseconds), a **GraalVM native image** removes JVM warm-up entirely;
+  **Project CRaC** restores an already-warmed JVM if you must keep the standard JIT.
+* **Warm steady state (bean wiring cost):** Spring Booster's parallel bootstrap shortens
+  the wall-clock of creating many *independent, heavyweight component beans* once the JVM
+  is warm — work the cold-start levers do not parallelize.
+
+So the recommended default for fast first-run startup is **Spring AOT + the JDK AOT
+cache**, with parallel bootstrap added when the application genuinely has many heavy
+component beans to build concurrently.
