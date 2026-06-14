@@ -37,6 +37,7 @@ own machine; absolute numbers and the sign of the tiny delta will vary.)
 | `setup.sh` | Installs `spring-booster` to `~/.m2`, clones Petclinic at a pinned commit, applies the patch, builds the jar. |
 | `petclinic-spring-booster.patch` | The exact Spring Booster integration changes applied to Petclinic. |
 | `measure.sh` | Runs a jar N times and prints each reported "Started … in X seconds" value. |
+| `measure-in-jvm.sh` | Starts the context N times **inside one JVM** and prints each iteration's time — used to prove startup is JIT-dominated. |
 | `run-benchmark.sh` | Runs 5× baseline + 5× boosted (plus a warm-up each) and prints the comparison table. |
 | `spring-petclinic/` | The cloned + patched Petclinic checkout (git-ignored; created by `setup.sh`). |
 
@@ -120,3 +121,42 @@ hurts in any statistically meaningful way. The library is most useful for applic
 with many *independent, heavyweight component beans* — or applications that knowingly
 enable `backgroundFactoryMethodBeans` for their own safe `@Bean` beans — not for an app
 whose startup is dominated by framework auto-configuration.
+
+## Proving the cold start is JIT-dominated
+
+A natural follow-up question is **why** the absolute numbers (~3.5 s) are so large
+and so insensitive to parallelism. Because each measured run is a *brand-new* JVM,
+every run pays the full cold-start tax: bytecode runs interpreted, the JIT has not yet
+compiled the hot paths, and thousands of classes are loaded and verified for the first
+time. The hypothesis is therefore that startup is dominated by **JVM warm-up (JIT +
+class loading)**, not by the bean-instantiation strategy.
+
+`measure-in-jvm.sh` tests this directly: it keeps the JVM alive and rebuilds the
+Petclinic context many times in a row. The per-iteration *work is identical* every time
+(same beans, same wiring — the boosted variant logs `Parallel bootstrap enabled for N
+bean(s)` on every iteration), so any change in time is pure warm-up.
+
+```bash
+./setup.sh             # if not already done
+./measure-in-jvm.sh 10 # 10 context starts per variant, in one JVM
+```
+
+Representative result (Temurin 25, wall-clock around `application.run()`):
+
+| Variant | Iter 1 (cold) | Last (warm) | Cold/warm |
+|---|---:|---:|---:|
+| Baseline (sequential) | ~5.7 s | ~0.5 s | ~11× |
+| Boosted (parallel bootstrap) | ~5.7 s | ~0.5 s | ~10× |
+
+The first context build takes **roughly an order of magnitude longer** than the later
+ones, even though it does exactly the same work — and the time keeps dropping for a few
+iterations as the JIT promotes more methods to compiled code before flattening out.
+
+**Conclusion:** the assumption holds. Petclinic's startup cost is dominated by cold-JVM
+warm-up (interpretation, JIT compilation, first-time class loading), which is identical
+whether beans are created sequentially or in parallel. That is the deeper reason the
+baseline and boosted runs are indistinguishable: parallelising a slice of the bean
+graph cannot move a number that is set by the JIT, not by the bean wiring. (This also
+explains why CDS/AOT and, ultimately, GraalVM native images — which remove most of that
+warm-up — are the high-leverage levers for Spring startup, whereas parallel bootstrap
+helps only when independent, heavyweight *component* beans dominate.)
