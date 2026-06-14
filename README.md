@@ -296,6 +296,36 @@ ordered, cycle detection and layering are unaffected, and every member must stil
 fails fast with `BeanCurrentlyInCreationException` and falls back to the sequential
 bootstrap.
 
+### Spring Boot Web profile (opt-in)
+
+The relaxations above all require you to *name* the beans you want to free. On a fully
+auto-configured Spring Boot Web application those names are framework-internal and vary
+across Boot versions, so the generic planner conservatively keeps the heavyweight
+web/security/cache infrastructure on the main thread. The opt-in **Spring Boot Web
+profile** does the naming for you: it carries a curated registry of well-known Boot Web
+auto-configuration beans — the Jackson `ObjectMapper` and Spring MVC handler
+infrastructure, the Spring Security filter chain, and the cache manager — matched by both
+canonical name *and* type, and frees them from `@Bean` co-location.
+
+```java
+@EnableParallelBootstrap(springBootWebProfile = true)
+// or
+ParallelBootstrapSettings.builder().springBootWebProfile(true).build();
+```
+
+The profile is **off by default** and only activates when the context is detected to be a
+web application (it looks for a web-server-factory / dispatcher marker type); on a non-web
+application it is inert. It is a *pre-list generator*, not a new execution path: each
+resolved bean is freed exactly like the per-bean allowlist, and must still clear
+`isSafeCandidate` and the mainline-propagation pass. Structurally pinned heavyweights — the
+JPA `EntityManagerFactory` (a `FactoryBean`), the `DataSource` its consumers pull mainline,
+the JPA-`depends-on`-pinned Liquibase/Flyway migrator, and the embedded servlet container —
+therefore stay on the main thread automatically and are deliberately not in the registry.
+The realistic win is overlapping Security + Jackson/MVC + cache among themselves and with
+the JPA stack's main-thread work. Because the library depends only on `spring-context`,
+registry types are resolved reflectively, so an entry whose type is absent simply never
+matches.
+
 ### Build-time planning (Spring AOT)
 
 When Spring AOT processing runs, Spring Booster can precompute its conservative

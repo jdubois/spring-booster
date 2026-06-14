@@ -558,8 +558,8 @@ public class ParallelBootstrapBeanFactoryPostProcessor
             }
         }
         if (logger.isDebugEnabled()) {
-            logger.debug("Spring Boot Web profile freed " + freed + " curated web bean(s) from "
-                    + "co-location across " + groups.size() + " group(s)");
+            logger.debug("Spring Boot Web profile freed " + freed + " curated web bean(s) from " + "co-location across "
+                    + groups.size() + " group(s)");
         }
     }
 

@@ -62,6 +62,13 @@ the comparison is apples-to-apples (identical classpath and artifact).
 * **Boosted** — run with `--spring.profiles.active=dev,boost`. A
   `JhipsterParallelBootstrapInitializer` registers the library's
   `ParallelBootstrapBeanFactoryPostProcessor` when the `boost` profile is active.
+* **Boosted + Web profile** — run with `--spring.profiles.active=dev,boost,boost-web`
+  (or add `--spring-boot-web-profile=true` to the boosted run). This additionally
+  enables the opinionated **Spring Boot Web profile** (`springBootWebProfile=true`),
+  which consults a curated registry of well-known web/security/cache auto-config beans
+  and frees them from `@Bean` co-location so they may overlap with the main-thread
+  JPA/migration work. It targets the canonical Boot Web architecture directly instead
+  of relying solely on the generic connectivity graph.
 
 Startup time is taken from Spring Boot's own
 `Started JhipsterSampleApplicationApp in X seconds` log line. Each variant runs one

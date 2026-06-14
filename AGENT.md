@@ -34,6 +34,7 @@ degrades gracefully to the normal sequential bootstrap.
 | `BeanDependencyGraph` | Dependency graph over the bean definitions: declared **and** by-type autowiring edges, classified forced vs sync. Kahn layering + Tarjan cycle detection. Never instantiates beans. |
 | `AutowiredEdgeResolver` | Reflectively resolves by-type / `@Autowired` / `ObjectProvider` edges (no bean instantiation). |
 | `ParallelBootstrapBeanFactoryPostProcessor` | The engine: connectivity-safe candidate planning, marks them, installs/tears down the executor. |
+| `SpringBootWebProfile` | Curated registry of well-known Boot Web/security/cache auto-config beans (matched by canonical name + type) plus web-context detection; backs the opt-in `springBootWebProfile` pre-list. |
 | `package-info.java` | `@NullMarked` package declaration + overview. |
 
 ## Build, test, and publish

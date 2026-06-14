@@ -21,7 +21,7 @@ new file mode 100644
 index 0000000..867fb0e
 --- /dev/null
 +++ b/src/main/java/io/github/jhipster/sample/JhipsterParallelBootstrapInitializer.java
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,31 @@
 +package io.github.jhipster.sample;
 +
 +import io.github.jdubois.springbooster.ParallelBootstrapBeanFactoryPostProcessor;
@@ -41,8 +41,14 @@ index 0000000..867fb0e
 +        if (!enabled) {
 +            return;
 +        }
++        // Opt into the opinionated Spring Boot Web profile via the "boost-web" profile or
++        // -Dspring-boot-web-profile=true, to measure the curated web-bean pre-list on this app.
++        boolean webProfile =
++            environment.matchesProfiles("boost-web") ||
++            Boolean.parseBoolean(environment.getProperty("spring-boot-web-profile", "false"));
 +        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
 +            .threadNamePrefix("jhipster-boot-")
++            .springBootWebProfile(webProfile)
 +            .build();
 +        applicationContext.addBeanFactoryPostProcessor(new ParallelBootstrapBeanFactoryPostProcessor(settings));
 +    }

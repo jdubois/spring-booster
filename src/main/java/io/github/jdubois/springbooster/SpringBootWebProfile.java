@@ -151,8 +151,7 @@ final class SpringBootWebProfile {
             new Group(
                     "cache",
                     false,
-                    List.of(new Entry(
-                            List.of("cacheManager"), List.of("org.springframework.cache.CacheManager")))));
+                    List.of(new Entry(List.of("cacheManager"), List.of("org.springframework.cache.CacheManager")))));
 
     private SpringBootWebProfile() {}
 

@@ -626,7 +626,8 @@ class ParallelBootstrapBeanFactoryPostProcessorTests {
     }
 
     private void registerWebServerFactory() {
-        this.beanFactory.registerBeanDefinition("webServerFactory", new RootBeanDefinition(ServletWebServerFactory.class));
+        this.beanFactory.registerBeanDefinition(
+                "webServerFactory", new RootBeanDefinition(ServletWebServerFactory.class));
     }
 
     private void registerFactoryBean(String beanName, String factoryBeanName, String... constructorRefs) {
