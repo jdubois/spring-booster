@@ -35,7 +35,7 @@ your own machine; absolute numbers and the sign of the tiny delta will vary.)
 | `setup.sh` | Installs `spring-booster` to `~/.m2`, clones the JHipster sample app at a pinned commit, applies the patch, builds the jar (backend only). |
 | `jhipster-spring-booster.patch` | The exact Spring Booster integration changes applied to the JHipster sample app. |
 | `measure.sh` | Runs a jar N times and prints each reported "Started JhipsterSampleApplicationApp in X seconds" value. |
-| `run-benchmark.sh` | Runs 5× baseline + 5× boosted (plus a warm-up each) and prints the comparison table. |
+| `run-benchmark.sh` | Runs 5× baseline + 5× boosted + 5× boosted-with-Web-profile (plus a warm-up each) and prints the comparison table. |
 | `jhipster-sample-app/` | The cloned + patched JHipster checkout (git-ignored; created by `setup.sh`). |
 
 ## Requirements
