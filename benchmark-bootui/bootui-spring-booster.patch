@@ -112,3 +112,162 @@ index 0000000..7f1237e
 +        applicationContext.addBeanFactoryPostProcessor(new ParallelBootstrapBeanFactoryPostProcessor(settings));
 +    }
 +}
+diff --git a/bootui-autoconfigure/src/main/java/io/github/jdubois/bootui/autoconfigure/BootUiAutoConfiguration.java b/bootui-autoconfigure/src/main/java/io/github/jdubois/bootui/autoconfigure/BootUiAutoConfiguration.java
+index 0000000..0000000 100644
+--- a/bootui-autoconfigure/src/main/java/io/github/jdubois/bootui/autoconfigure/BootUiAutoConfiguration.java
++++ b/bootui-autoconfigure/src/main/java/io/github/jdubois/bootui/autoconfigure/BootUiAutoConfiguration.java
+@@ -58,6 +58,7 @@
+ import org.springframework.context.ApplicationContext;
+ import org.springframework.context.ApplicationListener;
+ import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Primary;
+ import org.springframework.context.annotation.Conditional;
+ import org.springframework.context.annotation.Configuration;
+ import org.springframework.context.annotation.Import;
+@@ -224,12 +225,13 @@
+         private static final int HTTP_EXCHANGES_FILTER_ORDER = OrderedFilter.REQUEST_WRAPPER_FILTER_MAX_ORDER - 101;
+ 
+         @Bean
++        @Primary
+         @ConditionalOnMissingBean(HttpExchangeRepository.class)
+-        HttpExchangeRepository bootUiHttpExchangeRepository(BootUiProperties properties) {
+-            InMemoryHttpExchangeRepository repository = new InMemoryHttpExchangeRepository();
+-            repository.setCapacity(Math.max(1, properties.getHttpExchanges().getMaxExchanges()));
+-            repository.setReverse(true);
+-            return repository;
++        NotifyingHttpExchangeRepository bootUiHttpExchangeRepository(BootUiProperties properties) {
++            InMemoryHttpExchangeRepository inner = new InMemoryHttpExchangeRepository();
++            inner.setCapacity(Math.max(1, properties.getHttpExchanges().getMaxExchanges()));
++            inner.setReverse(true);
++            return new NotifyingHttpExchangeRepository(inner);
+         }
+ 
+         @Bean
+
+diff --git a/bootui-autoconfigure/src/main/java/io/github/jdubois/bootui/autoconfigure/web/NotifyingHttpExchangeRepository.java b/bootui-autoconfigure/src/main/java/io/github/jdubois/bootui/autoconfigure/web/NotifyingHttpExchangeRepository.java
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/bootui-autoconfigure/src/main/java/io/github/jdubois/bootui/autoconfigure/web/NotifyingHttpExchangeRepository.java
+@@ -0,0 +1,58 @@
++package io.github.jdubois.bootui.autoconfigure.web;
++
++import java.util.List;
++import java.util.concurrent.CopyOnWriteArrayList;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++import org.springframework.boot.actuate.web.exchanges.HttpExchange;
++import org.springframework.boot.actuate.web.exchanges.HttpExchangeRepository;
++
++/**
++ * An {@link HttpExchangeRepository} decorator that notifies subscribers whenever a new
++ * {@link HttpExchange} is {@link #add(HttpExchange) added}. BootUI registers this as the
++ * primary repository when it provides its own {@link org.springframework.boot.actuate.web.exchanges.InMemoryHttpExchangeRepository},
++ * which lets the live {@code /stream} SSE endpoint on {@link HttpExchangesController} push
++ * browser updates on every incoming request instead of relying on client polling.
++ *
++ * <p>Listeners are invoked synchronously on the calling thread. BootUI's own listener
++ * ({@link io.github.jdubois.bootui.autoconfigure.stream.BootUiChangeStream#signal()}) is
++ * non-blocking by design, so this does not add measurable latency to request recording.</p>
++ */
++public final class NotifyingHttpExchangeRepository implements HttpExchangeRepository {
++
++    private static final Logger log = LoggerFactory.getLogger(NotifyingHttpExchangeRepository.class);
++
++    private final HttpExchangeRepository delegate;
++
++    private final CopyOnWriteArrayList<Runnable> listeners = new CopyOnWriteArrayList<>();
++
++    public NotifyingHttpExchangeRepository(HttpExchangeRepository delegate) {
++        this.delegate = delegate;
++    }
++
++    @Override
++    public List<HttpExchange> findAll() {
++        return delegate.findAll();
++    }
++
++    @Override
++    public void add(HttpExchange httpExchange) {
++        delegate.add(httpExchange);
++        for (Runnable listener : listeners) {
++            try {
++                listener.run();
++            } catch (Exception ex) {
++                log.debug("HTTP exchange listener threw an exception", ex);
++            }
++        }
++    }
++
++    /**
++     * Registers a callback that is invoked on the calling thread after each successful {@link #add}.
++     * Exceptions thrown by the callback are caught and logged at DEBUG level so that one failing
++     * listener cannot affect others or disrupt request recording.
++     */
++    public void subscribe(Runnable listener) {
++        listeners.add(listener);
++    }
++}
+
+diff --git a/bootui-autoconfigure/src/main/java/io/github/jdubois/bootui/autoconfigure/web/HttpExchangesController.java b/bootui-autoconfigure/src/main/java/io/github/jdubois/bootui/autoconfigure/web/HttpExchangesController.java
+index 0000000..0000000 100644
+--- a/bootui-autoconfigure/src/main/java/io/github/jdubois/bootui/autoconfigure/web/HttpExchangesController.java
++++ b/bootui-autoconfigure/src/main/java/io/github/jdubois/bootui/autoconfigure/web/HttpExchangesController.java
+@@ -3,6 +3,7 @@
+ import io.github.jdubois.bootui.autoconfigure.BootUiProperties;
+ import io.github.jdubois.bootui.autoconfigure.config.BootUiExposure;
+ import io.github.jdubois.bootui.autoconfigure.monitoring.BootUiSelfDataFilter;
++import io.github.jdubois.bootui.autoconfigure.stream.BootUiChangeStream;
+ import io.github.jdubois.bootui.core.SecretMasker;
+ import io.github.jdubois.bootui.core.dto.HttpExchangeDto;
+ import io.github.jdubois.bootui.core.dto.HttpExchangesReport;
+@@ -22,10 +23,12 @@
+ import org.springframework.boot.actuate.web.exchanges.HttpExchange;
+ import org.springframework.boot.actuate.web.exchanges.HttpExchangeRepository;
+ import org.springframework.http.HttpHeaders;
++import org.springframework.http.MediaType;
+ import org.springframework.web.bind.annotation.GetMapping;
+ import org.springframework.web.bind.annotation.RequestMapping;
+ import org.springframework.web.bind.annotation.RequestParam;
+ import org.springframework.web.bind.annotation.RestController;
++import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+ 
+ @RestController
+ @RequestMapping("/bootui/api/http-exchanges")
+@@ -44,6 +47,8 @@
+ 
+     private final BootUiSelfDataFilter selfDataFilter;
+ 
++    private final BootUiChangeStream changeStream;
++
+     private final SecretMasker masker = new SecretMasker();
+ 
+     public HttpExchangesController(ObjectProvider<HttpExchangeRepository> repository, BootUiProperties properties) {
+@@ -60,6 +65,11 @@
+         this.properties = properties;
+         this.selfDataFilter = selfDataFilter;
+         this.exposure = exposure;
++        this.changeStream = new BootUiChangeStream("http-exchanges");
++        HttpExchangeRepository exchangeRepository = repository.getIfAvailable();
++        if (exchangeRepository instanceof NotifyingHttpExchangeRepository notifying) {
++            notifying.subscribe(changeStream::signal);
++        }
+     }
+ 
+     @GetMapping
+@@ -96,6 +106,15 @@
+         return new HttpExchangesReport(visible.size(), recorded.size(), hiddenSelf, page.items(), page.page(), null);
+     }
+ 
++    /**
++     * Streams a coalesced {@code update} notification whenever a new HTTP exchange is recorded,
++     * so the browser can refresh live without polling.
++     */
++    @GetMapping(path = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
++    public SseEmitter stream() {
++        return changeStream.open();
++    }
++
+     private boolean isSelfExchange(HttpExchange exchange) {
+         HttpExchange.Request request = exchange.getRequest();
+         return request != null
