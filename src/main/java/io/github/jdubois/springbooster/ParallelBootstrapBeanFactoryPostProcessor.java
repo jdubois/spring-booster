@@ -337,6 +337,14 @@ public class ParallelBootstrapBeanFactoryPostProcessor
         // serialize. Forced depends-on/factory edges and the safety gates below still apply.
         applyCoBackgroundGroups(beanFactory, graph);
 
+        // Apply the opinionated Spring Boot Web profile (opt-in springBootWebProfile): when the
+        // context is a web application, free a curated set of well-known web/security/cache
+        // auto-configuration beans from co-location so they may overlap with the main-thread
+        // JPA/migration work. This only ever feeds the same co-location/inter-member edge drops as
+        // the allowlist and co-background groups, so every freed bean still clears the safety gates
+        // and the connectivity-safe propagation below.
+        applySpringBootWebProfile(beanFactory, graph);
+
         Set<String> cyclic = graph.beansInCycles();
         Set<String> forcedMainline = collectForcedMainlineBeans(beanFactory);
 
@@ -500,6 +508,58 @@ public class ParallelBootstrapBeanFactoryPostProcessor
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * Apply the opinionated <em>Spring Boot Web profile</em> (opt-in
+     * {@link ParallelBootstrapSettings#isSpringBootWebProfile() springBootWebProfile}): when the
+     * profile is enabled and the context is detected to be a web application, consult the curated
+     * {@link SpringBootWebProfile} registry and free its resolved members from {@code @Bean}
+     * co-location.
+     *
+     * <p>This is a <em>pre-list generator</em>, not a new execution path: for every resolved
+     * registry member it performs exactly the same co-location-edge drop as the per-bean
+     * {@link #applyBackgroundAllowlist allowlist}, and for a group flagged mutually-independent it
+     * additionally drops the sync edges between members like {@link #applyCoBackgroundGroups
+     * co-background groups}. Every freed bean must still clear {@link #isSafeCandidate} and survive
+     * {@link #propagateMainline}, so a structurally pinned heavyweight (the {@code FactoryBean}
+     * {@code EntityManagerFactory}, a {@code DataSource} pulled mainline by its consumers, a
+     * JPA-pinned migrator) stays on the main thread, and an invisible eager by-type pull still
+     * fails fast with {@code BeanCurrentlyInCreationException} (design goal #1). On a non-web
+     * context the profile is inert.
+     */
+    private void applySpringBootWebProfile(ConfigurableListableBeanFactory beanFactory, BeanDependencyGraph graph) {
+        if (!this.settings.isSpringBootWebProfile()) {
+            return;
+        }
+        if (!SpringBootWebProfile.isWebContext(beanFactory)) {
+            logger.debug("Spring Boot Web profile is enabled but the context is not a web "
+                    + "application; leaving the generic plan untouched");
+            return;
+        }
+        List<SpringBootWebProfile.ResolvedGroup> groups = SpringBootWebProfile.resolve(beanFactory, graph.getNodes());
+        int freed = 0;
+        for (SpringBootWebProfile.ResolvedGroup group : groups) {
+            for (String member : group.beanNames()) {
+                dropColocationEdge(beanFactory, graph, member);
+                freed++;
+            }
+            if (group.mutuallyIndependent()) {
+                // Drop co-location sync edges between mutually-independent members (both
+                // directions), so the group does not collapse onto a single thread.
+                for (String from : group.beanNames()) {
+                    for (String to : group.beanNames()) {
+                        if (!from.equals(to)) {
+                            graph.removeSyncEdge(from, to);
+                        }
+                    }
+                }
+            }
+        }
+        if (logger.isDebugEnabled()) {
+            logger.debug("Spring Boot Web profile freed " + freed + " curated web bean(s) from "
+                    + "co-location across " + groups.size() + " group(s)");
         }
     }
 

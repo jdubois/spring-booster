@@ -518,6 +518,117 @@ class ParallelBootstrapBeanFactoryPostProcessorTests {
         assertThat(candidates).doesNotContain("memberA", "memberB");
     }
 
+    // --- Spring Boot Web profile (springBootWebProfile) ---
+
+    @Test
+    void springBootWebProfileBackgroundsCuratedWebBeansOnWebContext() {
+        register("config", DynamicFactoryConfig.class);
+        registerFactoryBean("jacksonObjectMapper", "config");
+        registerFactoryBean("springSecurityFilterChain", "config");
+        registerFactoryBean("cacheManager", "config");
+        registerWebServerFactory();
+        ParallelBootstrapSettings settings =
+                ParallelBootstrapSettings.builder().springBootWebProfile(true).build();
+
+        List<String> candidates =
+                new ParallelBootstrapBeanFactoryPostProcessor(settings).planCandidates(this.beanFactory);
+
+        // The curated web/security/cache beans lose their co-location edge and may background even
+        // though the dynamic configuration stays on the main thread.
+        assertThat(candidates)
+                .contains("jacksonObjectMapper", "springSecurityFilterChain", "cacheManager")
+                .doesNotContain("config");
+    }
+
+    @Test
+    void springBootWebProfileColocatesCuratedBeansWithoutTheFlag() {
+        register("config", DynamicFactoryConfig.class);
+        registerFactoryBean("jacksonObjectMapper", "config");
+        registerFactoryBean("cacheManager", "config");
+        registerWebServerFactory();
+
+        List<String> candidates = new ParallelBootstrapBeanFactoryPostProcessor().planCandidates(this.beanFactory);
+
+        // Without springBootWebProfile the curated beans are co-located like any other @Bean of a
+        // dynamic configuration.
+        assertThat(candidates).doesNotContain("jacksonObjectMapper", "cacheManager");
+    }
+
+    @Test
+    void springBootWebProfileIsInertOnNonWebContext() {
+        register("config", DynamicFactoryConfig.class);
+        registerFactoryBean("jacksonObjectMapper", "config");
+        registerFactoryBean("cacheManager", "config");
+        // No web-server-factory bean: the context is not a web application.
+        ParallelBootstrapSettings settings =
+                ParallelBootstrapSettings.builder().springBootWebProfile(true).build();
+
+        List<String> candidates =
+                new ParallelBootstrapBeanFactoryPostProcessor(settings).planCandidates(this.beanFactory);
+
+        // The profile detects a non-web context and leaves the generic (co-located) plan untouched.
+        assertThat(candidates).doesNotContain("jacksonObjectMapper", "cacheManager");
+    }
+
+    @Test
+    void springBootWebProfileStillRespectsForcedMainline() {
+        // springSecurityFilterChain is a depends-on target of entityManagerFactory, so it is forced
+        // onto the main thread; the profile must not override that structural safety rule.
+        register("config", DynamicFactoryConfig.class);
+        registerWithDependsOn("entityManagerFactory", "springSecurityFilterChain");
+        registerFactoryBean("springSecurityFilterChain", "config");
+        registerWebServerFactory();
+        ParallelBootstrapSettings settings =
+                ParallelBootstrapSettings.builder().springBootWebProfile(true).build();
+
+        List<String> candidates =
+                new ParallelBootstrapBeanFactoryPostProcessor(settings).planCandidates(this.beanFactory);
+
+        assertThat(candidates).doesNotContain("springSecurityFilterChain");
+    }
+
+    @Test
+    void springBootWebProfileStillRespectsConnectivitySafety() {
+        // The curated cacheManager is pulled by type by a main-thread consumer, so it must stay on
+        // the main thread despite losing its co-location edge.
+        register("config", DynamicFactoryConfig.class);
+        RootBeanDefinition cacheManager = new RootBeanDefinition(Leaf.class);
+        cacheManager.setFactoryBeanName("config");
+        cacheManager.setFactoryMethodName("product");
+        this.beanFactory.registerBeanDefinition("cacheManager", cacheManager);
+        this.beanFactory.registerBeanDefinition("consumer", new RootBeanDefinition(ConstructorConsumer.class));
+        registerWebServerFactory();
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                .springBootWebProfile(true)
+                .candidateFilter(name -> !name.equals("consumer"))
+                .build();
+
+        List<String> candidates =
+                new ParallelBootstrapBeanFactoryPostProcessor(settings).planCandidates(this.beanFactory);
+
+        assertThat(candidates).doesNotContain("cacheManager");
+    }
+
+    @Test
+    void springBootWebProfileDetectsWebContextByTypeSimpleName() {
+        register("config", DynamicFactoryConfig.class);
+        registerFactoryBean("cacheManager", "config");
+        registerWebServerFactory();
+        ParallelBootstrapSettings settings =
+                ParallelBootstrapSettings.builder().springBootWebProfile(true).build();
+
+        // Detection is by the web-server-factory type, not by the cacheManager bean name, so the
+        // profile activates and frees the curated bean.
+        List<String> candidates =
+                new ParallelBootstrapBeanFactoryPostProcessor(settings).planCandidates(this.beanFactory);
+
+        assertThat(candidates).contains("cacheManager");
+    }
+
+    private void registerWebServerFactory() {
+        this.beanFactory.registerBeanDefinition("webServerFactory", new RootBeanDefinition(ServletWebServerFactory.class));
+    }
+
     private void registerFactoryBean(String beanName, String factoryBeanName, String... constructorRefs) {
         RootBeanDefinition bd = new RootBeanDefinition(Leaf.class);
         bd.setFactoryBeanName(factoryBeanName);
@@ -614,6 +725,10 @@ class ParallelBootstrapBeanFactoryPostProcessorTests {
     }
 
     static class SampleBeanPostProcessor implements BeanPostProcessor {}
+
+    // A stand-in whose simple name matches a Spring Boot Web marker type, so the web profile's
+    // architecture detection recognises this bare bean factory as a web application context.
+    static class ServletWebServerFactory {}
 
     static class Leaf {}
 

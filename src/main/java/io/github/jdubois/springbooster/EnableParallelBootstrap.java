@@ -169,6 +169,21 @@ public @interface EnableParallelBootstrap {
     CoBackgroundGroup[] coBackgroundGroups() default {};
 
     /**
+     * Whether the opinionated <em>Spring Boot Web profile</em> is enabled. Defaults to
+     * {@code false}. When {@code true} and the context is detected to be a web application,
+     * Spring Booster consults a curated registry of well-known Spring Boot Web
+     * auto-configuration beans (the Jackson/MVC web infrastructure, the Spring Security filter
+     * chain, and the cache manager), matched by canonical name and by type, and aggressively
+     * frees them from {@code @Bean} co-location so they may overlap with the main-thread
+     * JPA/migration work. Each freed bean still clears every safety gate and the
+     * connectivity-safe propagation, so structurally pinned heavyweights stay on the main
+     * thread and a non-web context is left untouched.
+     * @return whether the Spring Boot Web profile is enabled
+     * @see ParallelBootstrapSettings#isSpringBootWebProfile()
+     */
+    boolean springBootWebProfile() default false;
+
+    /**
      * Whether the experimental build-time bytecode lookup-detection refinement is
      * enabled. Defaults to {@code false}. When {@code true}, {@code @Configuration}
      * classes are scanned at the bytecode level to confirm whether they actually perform

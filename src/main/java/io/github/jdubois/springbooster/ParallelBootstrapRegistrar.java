@@ -100,6 +100,10 @@ class ParallelBootstrapRegistrar implements ImportBeanDefinitionRegistrar {
             if (bytecodeLookupDetection instanceof Boolean bytecodeValue) {
                 builder.bytecodeLookupDetection(bytecodeValue);
             }
+            Object springBootWebProfile = attributes.get("springBootWebProfile");
+            if (springBootWebProfile instanceof Boolean springBootWebProfileValue) {
+                builder.springBootWebProfile(springBootWebProfileValue);
+            }
             Object buildTimePlanningEnabled = attributes.get("buildTimePlanningEnabled");
             if (buildTimePlanningEnabled instanceof Boolean buildTimeValue) {
                 builder.buildTimePlanningEnabled(buildTimeValue);

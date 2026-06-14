@@ -78,6 +78,8 @@ public final class ParallelBootstrapSettings {
 
     private final List<Set<String>> coBackgroundGroups;
 
+    private final boolean springBootWebProfile;
+
     private final boolean bytecodeLookupDetection;
 
     private final boolean buildTimePlanningEnabled;
@@ -99,6 +101,7 @@ public final class ParallelBootstrapSettings {
             boolean backgroundSharedInfraConsumers,
             Set<String> barrierBeanNames,
             List<Set<String>> coBackgroundGroups,
+            boolean springBootWebProfile,
             boolean bytecodeLookupDetection,
             boolean buildTimePlanningEnabled,
             boolean runtimePlanningEnabled,
@@ -115,6 +118,7 @@ public final class ParallelBootstrapSettings {
         this.backgroundSharedInfraConsumers = backgroundSharedInfraConsumers;
         this.barrierBeanNames = barrierBeanNames;
         this.coBackgroundGroups = coBackgroundGroups;
+        this.springBootWebProfile = springBootWebProfile;
         this.bytecodeLookupDetection = bytecodeLookupDetection;
         this.buildTimePlanningEnabled = buildTimePlanningEnabled;
         this.runtimePlanningEnabled = runtimePlanningEnabled;
@@ -321,6 +325,39 @@ public final class ParallelBootstrapSettings {
     }
 
     /**
+     * Whether the opinionated <em>Spring Boot Web profile</em> is enabled. Defaults to
+     * {@code false}.
+     * <p>This profile targets the canonical Spring Boot Web architecture (an embedded
+     * servlet container plus Spring MVC, Jackson, optional Spring Security and Spring
+     * Cache) directly, rather than relying solely on the generic connectivity graph. When
+     * enabled <em>and</em> the context is detected to be a web application, Spring Booster
+     * consults a curated registry of well-known auto-configuration beans &mdash; matched by
+     * their canonical bean name <em>and</em> by type, so the match survives renames across
+     * Spring Boot versions &mdash; and aggressively frees the genuinely independent ones
+     * (the Jackson/MVC web infrastructure, the Spring Security filter chain, and the cache
+     * manager) from {@code @Bean} co-location so they may overlap with the JPA/migration
+     * work the framework keeps on the main thread.
+     * <p>The profile is a <em>pre-list generator</em>: it only ever feeds the existing,
+     * proven relaxation primitives (it drops the configuration&rarr;{@code @Bean}
+     * co-location edge for each registry member, exactly like
+     * {@link #getBackgroundBeanNames() backgroundBeanNames}). Every freed bean still has to
+     * clear {@link #getCandidateFilter()}, the opt-out attribute, the infrastructure-type
+     * gate, cycle detection, the forced-mainline {@code depends-on}/{@code FactoryBean}
+     * rule, and the connectivity-safe mainline propagation. So structurally pinned
+     * heavyweights &mdash; the {@code EntityManagerFactory} {@code FactoryBean}, the
+     * {@code DataSource} its consumers pull mainline, the JPA-pinned Liquibase/Flyway
+     * migrator, and the embedded servlet container created before singleton instantiation
+     * &mdash; stay on the main thread automatically, and an invisible eager by-type pull
+     * still fails fast with {@code BeanCurrentlyInCreationException} (design goal #1). On a
+     * non-web context the profile is inert.
+     * @return whether the Spring Boot Web profile is enabled
+     * @see SpringBootWebProfile
+     */
+    public boolean isSpringBootWebProfile() {
+        return this.springBootWebProfile;
+    }
+
+    /**
      * Whether the experimental build-time <em>bytecode lookup-detection</em> refinement
      * is enabled.
      * <p>Defaults to {@code false}. When enabled, Spring Booster scans the bytecode of
@@ -483,6 +520,8 @@ public final class ParallelBootstrapSettings {
         private Set<String> barrierBeanNames = Collections.emptySet();
 
         private List<Set<String>> coBackgroundGroups = Collections.emptyList();
+
+        private boolean springBootWebProfile = false;
 
         private boolean bytecodeLookupDetection = false;
 
@@ -707,6 +746,24 @@ public final class ParallelBootstrapSettings {
         }
 
         /**
+         * Enable or disable the opinionated <em>Spring Boot Web profile</em>. Defaults to
+         * {@code false}. When enabled and the context is detected to be a web application,
+         * Spring Booster aggressively frees a curated set of well-known Spring Boot Web
+         * auto-configuration beans (Jackson/MVC web infrastructure, the Spring Security
+         * filter chain, and the cache manager) from {@code @Bean} co-location so they may
+         * overlap with the main-thread JPA/migration work. Each freed bean still clears
+         * every safety gate, so structurally pinned heavyweights stay on the main thread and
+         * a non-web context is left untouched.
+         * @param springBootWebProfile whether the Spring Boot Web profile is enabled
+         * @return this builder
+         * @see ParallelBootstrapSettings#isSpringBootWebProfile()
+         */
+        public Builder springBootWebProfile(boolean springBootWebProfile) {
+            this.springBootWebProfile = springBootWebProfile;
+            return this;
+        }
+
+        /**
          * Enable or disable the experimental build-time bytecode lookup-detection
          * refinement. Defaults to {@code false}. When enabled, {@code @Configuration}
          * classes are scanned at the bytecode level to confirm whether they actually
@@ -788,6 +845,7 @@ public final class ParallelBootstrapSettings {
                     this.backgroundSharedInfraConsumers,
                     this.barrierBeanNames,
                     this.coBackgroundGroups,
+                    this.springBootWebProfile,
                     this.bytecodeLookupDetection,
                     this.buildTimePlanningEnabled,
                     this.runtimePlanningEnabled,
