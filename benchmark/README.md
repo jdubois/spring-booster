@@ -155,7 +155,7 @@ iterations as the JIT promotes more methods to compiled code before flattening o
 **Conclusion:** the assumption holds. Petclinic's startup cost is dominated by cold-JVM
 warm-up (interpretation, JIT compilation, first-time class loading), which is identical
 whether beans are created sequentially or in parallel. That is the deeper reason the
-baseline and boosted runs are indistinguishable: parallelising a slice of the bean
+baseline and boosted runs are indistinguishable: parallelizing a slice of the bean
 graph cannot move a number that is set by the JIT, not by the bean wiring. (This also
 explains why CDS/AOT and, ultimately, GraalVM native images — which remove most of that
 warm-up — are the high-leverage levers for Spring startup, whereas parallel bootstrap

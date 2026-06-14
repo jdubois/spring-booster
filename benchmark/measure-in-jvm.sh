@@ -83,9 +83,12 @@ run_variant() {
     local label="$1"
     shift
     echo ">>> $label — $ITERS starts in ONE JVM" >&2
+    # Timings arrive on stdout via the RESULT_MS sentinel; let the harness's own
+    # stderr (per-iteration progress and any real errors) pass through so a failed
+    # run is debuggable.
     local times
     times="$(java -cp "$RUNCP" RepeatInJvm "$ITERS" \
-        --server.port=0 --spring.main.banner-mode=off "$@" 2>/dev/null \
+        --server.port=0 --spring.main.banner-mode=off "$@" \
         | sed -n 's/^RESULT_MS //p')"
     # shellcheck disable=SC2086
     read -r first last <<<"$(printf '%s\n' $times | awk 'NR==1{f=$1} {l=$1} END{print f, l}')"
