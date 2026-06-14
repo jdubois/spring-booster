@@ -124,6 +124,7 @@ final class ParallelBootstrapPlanner {
                 Boolean.toString(settings.isBackgroundFactoryMethodBeans()),
                 Boolean.toString(settings.isDeferProviderEdges()),
                 Boolean.toString(settings.isBackgroundSharedInfraConsumers()),
+                Boolean.toString(settings.isSpringBootWebProfile()),
                 Boolean.toString(settings.isBytecodeLookupDetection()),
                 Boolean.toString(settings.isBuildTimePlanningEnabled()),
                 Boolean.toString(settings.isRuntimePlanningEnabled()),

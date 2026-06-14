@@ -57,9 +57,12 @@ if anything goes wrong.
   `@Bean` of *any* configuration. If a context has no dynamic configuration at all, its
   `@Bean` beans background. Opt in with `backgroundFactoryMethodBeans(true)` to parallelize
   `@Bean` beans even when dynamic configurations are present.
-* Marks those beans for background initialization and installs a **bounded
-  bootstrap thread pool** (sized by default at twice the available processor
-  count) that the bean factory uses during `preInstantiateSingletons()`.
+* Marks those beans for background initialization and installs a bootstrap
+  executor that the bean factory uses during `preInstantiateSingletons()`. By
+  default this is an **unbounded virtual-thread-per-task executor** (one virtual
+  thread per backgrounded bean); set `useVirtualThreads(false)` to use a **bounded
+  platform-thread pool** instead (sized by default at twice the available processor
+  count).
 * Can **precompute the conservative bootstrap plan at build time** during Spring AOT
   processing, package it as a generated resource, and reuse it at runtime instead of
   recomputing the bean graph on startup.
@@ -293,6 +296,36 @@ ordered, cycle detection and layering are unaffected, and every member must stil
 fails fast with `BeanCurrentlyInCreationException` and falls back to the sequential
 bootstrap.
 
+### Spring Boot Web profile (opt-in)
+
+The relaxations above all require you to *name* the beans you want to free. On a fully
+auto-configured Spring Boot Web application those names are framework-internal and vary
+across Boot versions, so the generic planner conservatively keeps the heavyweight
+web/security/cache infrastructure on the main thread. The opt-in **Spring Boot Web
+profile** does the naming for you: it carries a curated registry of well-known Boot Web
+auto-configuration beans — the Jackson `ObjectMapper` and Spring MVC handler
+infrastructure, the Spring Security filter chain, and the cache manager — matched by both
+canonical name *and* type, and frees them from `@Bean` co-location.
+
+```java
+@EnableParallelBootstrap(springBootWebProfile = true)
+// or
+ParallelBootstrapSettings.builder().springBootWebProfile(true).build();
+```
+
+The profile is **off by default** and only activates when the context is detected to be a
+web application (it looks for a web-server-factory / dispatcher marker type); on a non-web
+application it is inert. It is a *pre-list generator*, not a new execution path: each
+resolved bean is freed exactly like the per-bean allowlist, and must still clear
+`isSafeCandidate` and the mainline-propagation pass. Structurally pinned heavyweights — the
+JPA `EntityManagerFactory` (a `FactoryBean`), the `DataSource` its consumers pull mainline,
+the JPA-`depends-on`-pinned Liquibase/Flyway migrator, and the embedded servlet container —
+therefore stay on the main thread automatically and are deliberately not in the registry.
+The realistic win is overlapping Security + Jackson/MVC + cache among themselves and with
+the JPA stack's main-thread work. Because the library depends only on `spring-context`,
+registry types are resolved reflectively, so an entry whose type is absent simply never
+matches.
+
 ### Build-time planning (Spring AOT)
 
 When Spring AOT processing runs, Spring Booster can precompute its conservative
@@ -347,28 +380,36 @@ ParallelBootstrapSettings.builder().bytecodeLookupDetection(true).build();
 > off the startup critical path. It changes which configurations are classified as
 > dynamic, but never relaxes the context-wide co-location rule when a genuine
 > dynamic lookup remains.
-### Using virtual threads for the bootstrap executor
+### Virtual threads for the bootstrap executor (default)
 
-By default the bootstrap executor is a **bounded platform-thread pool** sized at
-twice the available processor count. Bean bootstrap is, however, frequently
-*blocking-bound* — opening connection pools, warming caches, establishing remote
-clients — and that is exactly the workload virtual threads are built for. Opt in to
-run **one virtual thread per backgrounded bean** instead of the bounded pool:
+By default the bootstrap executor runs **one virtual thread per backgrounded bean**.
+Bean bootstrap is frequently *blocking-bound* — opening connection pools, warming
+caches, establishing remote clients — and that is exactly the workload virtual
+threads are built for, so they are the default executor. No configuration is needed
+to get them:
 
 ```java
-@EnableParallelBootstrap(useVirtualThreads = true)
+@EnableParallelBootstrap
 // or
-ParallelBootstrapSettings.builder().useVirtualThreads(true).build();
+ParallelBootstrapSettings.builder().build();
 ```
 
-When enabled, an unbounded virtual-thread-per-task executor is installed and the
+With the default, an unbounded virtual-thread-per-task executor is installed and the
 `poolSize` setting is ignored, so every independent blocking bean can make progress
 concurrently without the pool-size ceiling and without oversubscribing the platform
 carriers. This relies on the **Java 25 baseline**: since the fix for pinning on
 `synchronized` (JDK 24, [JEP 491](https://openjdk.org/jeps/491)), a virtual thread
 that blocks inside Spring's singleton-creation lock no longer pins its carrier, so
-the blocking-bound part of bootstrap parallelizes cleanly. Purely CPU-bound bootstrap
-workloads should keep the default bounded pool, whose size tracks the processor count.
+the blocking-bound part of bootstrap parallelizes cleanly.
+
+Purely CPU-bound bootstrap workloads can opt out and use a **bounded platform-thread
+pool** (sized at twice the available processor count by default) instead:
+
+```java
+@EnableParallelBootstrap(useVirtualThreads = false)
+// or
+ParallelBootstrapSettings.builder().useVirtualThreads(false).build();
+```
 
 Note that the real ceiling on startup speedup is the **critical path through the bean
 dependency graph**: no threading model can beat the longest chain of dependent beans.

@@ -3,16 +3,21 @@
 # run-benchmark.sh — compare JHipster sample-app startup time WITHOUT and WITH
 # Spring Booster's parallel bean instantiation.
 #
-# It runs the very same application jar twice:
+# It runs the very same application jar three times:
 #   * baseline — sequential bootstrap (Spring Booster inactive)
 #   * boosted  — parallel bootstrap (extra "boost" profile), which activates
 #                io.github.jdubois:spring-booster with the accept-all default
 #                (factory-method @Bean beans are kept on the main thread, so the
 #                analysis backgrounds the app's component beans).
+#   * boosted+web — parallel bootstrap plus the opinionated Spring Boot Web
+#                profile (extra "boost-web" profile / springBootWebProfile=true),
+#                which consults a curated registry of well-known web/security/cache
+#                auto-config beans and frees them from @Bean co-location so they may
+#                overlap with the main-thread JPA/migration work.
 #
-# Both variants run under the JHipster "dev" profile (in-memory H2); the boosted
-# variant simply adds the "boost" profile, which the
-# JhipsterParallelBootstrapInitializer uses to register the post-processor.
+# All variants run under the JHipster "dev" profile (in-memory H2); the boosted
+# variants simply add the "boost" (and, for the third, "boost-web") profile, which
+# the JhipsterParallelBootstrapInitializer uses to register the post-processor.
 #
 # Each variant is measured RUNS times (default 5), preceded by one discarded
 # warm-up run per variant to stabilise the OS file cache. The reported startup
@@ -66,20 +71,33 @@ echo
 
 baseline_times="$(run_variant 'BASELINE (sequential)' --spring.profiles.active=dev)"
 boosted_times="$(run_variant 'BOOSTED (parallel bootstrap)' --spring.profiles.active=dev,boost)"
+# Third variant: parallel bootstrap PLUS the opinionated Spring Boot Web profile
+# (springBootWebProfile=true), activated here via the extra "boost-web" profile. It
+# frees a curated registry of well-known web/security/cache auto-config @Bean beans
+# from co-location so they may overlap with the main-thread JPA/migration work.
+webprofile_times="$(run_variant 'BOOSTED+WEB (parallel bootstrap + Spring Boot Web profile)' \
+    --spring.profiles.active=dev,boost,boost-web)"
 
 # shellcheck disable=SC2086
 read -r b_min b_med b_mean b_max <<<"$(stats $baseline_times)"
 # shellcheck disable=SC2086
 read -r x_min x_med x_mean x_max <<<"$(stats $boosted_times)"
+# shellcheck disable=SC2086
+read -r w_min w_med w_mean w_max <<<"$(stats $webprofile_times)"
 
 # Improvement on the median (positive = boosted is faster).
 delta="$(awk -v a="$b_med" -v b="$x_med" 'BEGIN { printf "%+.3f", a - b }')"
 pct="$(awk -v a="$b_med" -v b="$x_med" 'BEGIN { if (a > 0) printf "%+.1f", (a - b) / a * 100; else printf "n/a" }')"
+# Improvement of the Web-profile variant on the median (positive = faster than baseline).
+wdelta="$(awk -v a="$b_med" -v b="$w_med" 'BEGIN { printf "%+.3f", a - b }')"
+wpct="$(awk -v a="$b_med" -v b="$w_med" 'BEGIN { if (a > 0) printf "%+.1f", (a - b) / a * 100; else printf "n/a" }')"
 
 # shellcheck disable=SC2086
 baseline_list="$(printf '%s ' $baseline_times | sed 's/ $//; s/ /, /g')"
 # shellcheck disable=SC2086
 boosted_list="$(printf '%s ' $boosted_times | sed 's/ $//; s/ /, /g')"
+# shellcheck disable=SC2086
+webprofile_list="$(printf '%s ' $webprofile_times | sed 's/ $//; s/ /, /g')"
 
 echo
 echo "## Startup time: without vs with Spring Booster"
@@ -90,5 +108,7 @@ echo "| Variant | Runs (s) | Min | Median | Mean | Max |"
 echo "|---|---|---:|---:|---:|---:|"
 echo "| Baseline (sequential) | $baseline_list | $b_min | $b_med | $b_mean | $b_max |"
 echo "| Boosted (parallel bootstrap) | $boosted_list | $x_min | $x_med | $x_mean | $x_max |"
+echo "| Boosted + Web profile | $webprofile_list | $w_min | $w_med | $w_mean | $w_max |"
 echo
 echo "**Median difference (baseline − boosted): ${delta}s (${pct}%).**"
+echo "**Median difference (baseline − boosted+web): ${wdelta}s (${wpct}%).**"

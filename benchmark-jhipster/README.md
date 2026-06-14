@@ -35,7 +35,7 @@ your own machine; absolute numbers and the sign of the tiny delta will vary.)
 | `setup.sh` | Installs `spring-booster` to `~/.m2`, clones the JHipster sample app at a pinned commit, applies the patch, builds the jar (backend only). |
 | `jhipster-spring-booster.patch` | The exact Spring Booster integration changes applied to the JHipster sample app. |
 | `measure.sh` | Runs a jar N times and prints each reported "Started JhipsterSampleApplicationApp in X seconds" value. |
-| `run-benchmark.sh` | Runs 5× baseline + 5× boosted (plus a warm-up each) and prints the comparison table. |
+| `run-benchmark.sh` | Runs 5× baseline + 5× boosted + 5× boosted-with-Web-profile (plus a warm-up each) and prints the comparison table. |
 | `jhipster-sample-app/` | The cloned + patched JHipster checkout (git-ignored; created by `setup.sh`). |
 
 ## Requirements
@@ -62,6 +62,13 @@ the comparison is apples-to-apples (identical classpath and artifact).
 * **Boosted** — run with `--spring.profiles.active=dev,boost`. A
   `JhipsterParallelBootstrapInitializer` registers the library's
   `ParallelBootstrapBeanFactoryPostProcessor` when the `boost` profile is active.
+* **Boosted + Web profile** — run with `--spring.profiles.active=dev,boost,boost-web`
+  (or add `--spring-boot-web-profile=true` to the boosted run). This additionally
+  enables the opinionated **Spring Boot Web profile** (`springBootWebProfile=true`),
+  which consults a curated registry of well-known web/security/cache auto-config beans
+  and frees them from `@Bean` co-location so they may overlap with the main-thread
+  JPA/migration work. It targets the canonical Boot Web architecture directly instead
+  of relying solely on the generic connectivity graph.
 
 Startup time is taken from Spring Boot's own
 `Started JhipsterSampleApplicationApp in X seconds` log line. Each variant runs one

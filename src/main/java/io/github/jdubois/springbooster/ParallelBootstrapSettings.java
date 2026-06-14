@@ -78,6 +78,8 @@ public final class ParallelBootstrapSettings {
 
     private final List<Set<String>> coBackgroundGroups;
 
+    private final boolean springBootWebProfile;
+
     private final boolean bytecodeLookupDetection;
 
     private final boolean buildTimePlanningEnabled;
@@ -99,6 +101,7 @@ public final class ParallelBootstrapSettings {
             boolean backgroundSharedInfraConsumers,
             Set<String> barrierBeanNames,
             List<Set<String>> coBackgroundGroups,
+            boolean springBootWebProfile,
             boolean bytecodeLookupDetection,
             boolean buildTimePlanningEnabled,
             boolean runtimePlanningEnabled,
@@ -115,6 +118,7 @@ public final class ParallelBootstrapSettings {
         this.backgroundSharedInfraConsumers = backgroundSharedInfraConsumers;
         this.barrierBeanNames = barrierBeanNames;
         this.coBackgroundGroups = coBackgroundGroups;
+        this.springBootWebProfile = springBootWebProfile;
         this.bytecodeLookupDetection = bytecodeLookupDetection;
         this.buildTimePlanningEnabled = buildTimePlanningEnabled;
         this.runtimePlanningEnabled = runtimePlanningEnabled;
@@ -321,6 +325,39 @@ public final class ParallelBootstrapSettings {
     }
 
     /**
+     * Whether the opinionated <em>Spring Boot Web profile</em> is enabled. Defaults to
+     * {@code false}.
+     * <p>This profile targets the canonical Spring Boot Web architecture (an embedded
+     * servlet container plus Spring MVC, Jackson, optional Spring Security and Spring
+     * Cache) directly, rather than relying solely on the generic connectivity graph. When
+     * enabled <em>and</em> the context is detected to be a web application, Spring Booster
+     * consults a curated registry of well-known auto-configuration beans &mdash; matched by
+     * their canonical bean name <em>and</em> by type, so the match survives renames across
+     * Spring Boot versions &mdash; and aggressively frees the genuinely independent ones
+     * (the Jackson/MVC web infrastructure, the Spring Security filter chain, and the cache
+     * manager) from {@code @Bean} co-location so they may overlap with the JPA/migration
+     * work the framework keeps on the main thread.
+     * <p>The profile is a <em>pre-list generator</em>: it only ever feeds the existing,
+     * proven relaxation primitives (it drops the configuration&rarr;{@code @Bean}
+     * co-location edge for each registry member, exactly like
+     * {@link #getBackgroundBeanNames() backgroundBeanNames}). Every freed bean still has to
+     * clear {@link #getCandidateFilter()}, the opt-out attribute, the infrastructure-type
+     * gate, cycle detection, the forced-mainline {@code depends-on}/{@code FactoryBean}
+     * rule, and the connectivity-safe mainline propagation. So structurally pinned
+     * heavyweights &mdash; the {@code EntityManagerFactory} {@code FactoryBean}, the
+     * {@code DataSource} its consumers pull mainline, the JPA-pinned Liquibase/Flyway
+     * migrator, and the embedded servlet container created before singleton instantiation
+     * &mdash; stay on the main thread automatically, and an invisible eager by-type pull
+     * still fails fast with {@code BeanCurrentlyInCreationException} (design goal #1). On a
+     * non-web context the profile is inert.
+     * @return whether the Spring Boot Web profile is enabled
+     * @see SpringBootWebProfile
+     */
+    public boolean isSpringBootWebProfile() {
+        return this.springBootWebProfile;
+    }
+
+    /**
      * Whether the experimental build-time <em>bytecode lookup-detection</em> refinement
      * is enabled.
      * <p>Defaults to {@code false}. When enabled, Spring Booster scans the bytecode of
@@ -377,9 +414,9 @@ public final class ParallelBootstrapSettings {
     /**
      * Whether the bootstrap executor should run each backgrounded bean on a
      * <em>virtual thread</em> instead of on the bounded platform-thread pool.
-     * <p>Defaults to {@code false}, which installs the bounded
-     * {@link #getPoolSize() pool-sized} executor. Set to {@code true} to install an
-     * unbounded virtual-thread-per-task executor instead.
+     * <p>Defaults to {@code true}, which installs an unbounded
+     * virtual-thread-per-task executor. Set to {@code false} to install the bounded
+     * {@link #getPoolSize() pool-sized} platform-thread executor instead.
      * <p>Bean bootstrap is frequently blocking-bound (opening connection pools,
      * warming caches, establishing remote clients). Virtual threads let every
      * independent blocking bean make progress concurrently without the
@@ -389,8 +426,9 @@ public final class ParallelBootstrapSettings {
      * that blocks inside the singleton-creation lock no longer pins its carrier, so
      * the blocking-bound part of bootstrap gets the full benefit.
      * <p>When {@code true}, {@link #getPoolSize() poolSize} is ignored (the executor
-     * is unbounded). Purely CPU-bound bootstrap workloads should keep the default
-     * bounded pool, whose size tracks the available processor count.
+     * is unbounded). Purely CPU-bound bootstrap workloads should set this to
+     * {@code false} to use the bounded platform-thread pool, whose size tracks the
+     * available processor count.
      * @return whether to use a virtual-thread-per-task bootstrap executor
      */
     public boolean isUseVirtualThreads() {
@@ -483,6 +521,8 @@ public final class ParallelBootstrapSettings {
 
         private List<Set<String>> coBackgroundGroups = Collections.emptyList();
 
+        private boolean springBootWebProfile = false;
+
         private boolean bytecodeLookupDetection = false;
 
         private boolean buildTimePlanningEnabled = true;
@@ -491,7 +531,7 @@ public final class ParallelBootstrapSettings {
 
         private boolean generatedPlanRequired = false;
 
-        private boolean useVirtualThreads = false;
+        private boolean useVirtualThreads = true;
 
         private Builder() {}
 
@@ -706,6 +746,24 @@ public final class ParallelBootstrapSettings {
         }
 
         /**
+         * Enable or disable the opinionated <em>Spring Boot Web profile</em>. Defaults to
+         * {@code false}. When enabled and the context is detected to be a web application,
+         * Spring Booster aggressively frees a curated set of well-known Spring Boot Web
+         * auto-configuration beans (Jackson/MVC web infrastructure, the Spring Security
+         * filter chain, and the cache manager) from {@code @Bean} co-location so they may
+         * overlap with the main-thread JPA/migration work. Each freed bean still clears
+         * every safety gate, so structurally pinned heavyweights stay on the main thread and
+         * a non-web context is left untouched.
+         * @param springBootWebProfile whether the Spring Boot Web profile is enabled
+         * @return this builder
+         * @see ParallelBootstrapSettings#isSpringBootWebProfile()
+         */
+        public Builder springBootWebProfile(boolean springBootWebProfile) {
+            this.springBootWebProfile = springBootWebProfile;
+            return this;
+        }
+
+        /**
          * Enable or disable the experimental build-time bytecode lookup-detection
          * refinement. Defaults to {@code false}. When enabled, {@code @Configuration}
          * classes are scanned at the bytecode level to confirm whether they actually
@@ -758,8 +816,10 @@ public final class ParallelBootstrapSettings {
         /**
          * Set whether the bootstrap executor should run each backgrounded bean on a
          * virtual thread instead of on the bounded platform-thread pool. Defaults to
-         * {@code false}. When {@code true}, an unbounded virtual-thread-per-task
-         * executor is installed and {@link #poolSize(int) poolSize} is ignored.
+         * {@code true}. When {@code true}, an unbounded virtual-thread-per-task
+         * executor is installed and {@link #poolSize(int) poolSize} is ignored. Set to
+         * {@code false} to install the bounded {@link #poolSize(int) pool-sized}
+         * platform-thread executor instead.
          * @param useVirtualThreads whether to use a virtual-thread-per-task executor
          * @return this builder
          * @see ParallelBootstrapSettings#isUseVirtualThreads()
@@ -785,6 +845,7 @@ public final class ParallelBootstrapSettings {
                     this.backgroundSharedInfraConsumers,
                     this.barrierBeanNames,
                     this.coBackgroundGroups,
+                    this.springBootWebProfile,
                     this.bytecodeLookupDetection,
                     this.buildTimePlanningEnabled,
                     this.runtimePlanningEnabled,

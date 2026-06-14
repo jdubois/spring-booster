@@ -169,6 +169,21 @@ public @interface EnableParallelBootstrap {
     CoBackgroundGroup[] coBackgroundGroups() default {};
 
     /**
+     * Whether the opinionated <em>Spring Boot Web profile</em> is enabled. Defaults to
+     * {@code false}. When {@code true} and the context is detected to be a web application,
+     * Spring Booster consults a curated registry of well-known Spring Boot Web
+     * auto-configuration beans (the Jackson/MVC web infrastructure, the Spring Security filter
+     * chain, and the cache manager), matched by canonical name and by type, and aggressively
+     * frees them from {@code @Bean} co-location so they may overlap with the main-thread
+     * JPA/migration work. Each freed bean still clears every safety gate and the
+     * connectivity-safe propagation, so structurally pinned heavyweights stay on the main
+     * thread and a non-web context is left untouched.
+     * @return whether the Spring Boot Web profile is enabled
+     * @see ParallelBootstrapSettings#isSpringBootWebProfile()
+     */
+    boolean springBootWebProfile() default false;
+
+    /**
      * Whether the experimental build-time bytecode lookup-detection refinement is
      * enabled. Defaults to {@code false}. When {@code true}, {@code @Configuration}
      * classes are scanned at the bytecode level to confirm whether they actually perform
@@ -225,15 +240,17 @@ public @interface EnableParallelBootstrap {
     /**
      * Whether the bootstrap executor should run each backgrounded bean on a virtual
      * thread instead of on the bounded platform-thread pool. Defaults to
-     * {@code false}. When {@code true}, an unbounded virtual-thread-per-task executor
-     * is installed and {@link #poolSize()} is ignored.
+     * {@code true}. When {@code true}, an unbounded virtual-thread-per-task executor
+     * is installed and {@link #poolSize()} is ignored. Set to {@code false} to install
+     * the bounded {@link #poolSize() pool-sized} platform-thread executor instead.
      * <p>Virtual threads suit the frequently blocking-bound nature of bean bootstrap:
      * every independent blocking bean can make progress without the {@link #poolSize()}
      * ceiling. On the Java 25 baseline, blocking inside the singleton-creation lock no
      * longer pins a carrier (JEP&nbsp;491), so the blocking-bound work parallelizes
-     * cleanly. Purely CPU-bound bootstrap workloads should keep the bounded pool.
+     * cleanly. Purely CPU-bound bootstrap workloads should set this to {@code false} to
+     * use the bounded pool.
      * @return whether to use a virtual-thread-per-task bootstrap executor
      * @see ParallelBootstrapSettings#isUseVirtualThreads()
      */
-    boolean useVirtualThreads() default false;
+    boolean useVirtualThreads() default true;
 }

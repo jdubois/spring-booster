@@ -555,6 +555,53 @@ forced edge or by an external main-thread consumer stays mainline, and an incorr
 independence assertion still fails fast with `BeanCurrentlyInCreationException` rather
 than producing wrong results (design goal #1).
 
+#### 5.2.7 Spring Boot Web profile (`springBootWebProfile`)
+
+The relaxations of §5.2.4–§5.2.6 are all **bean-name driven**: the application must name
+the specific beans it wants to free. On a fully auto-configured Spring Boot Web
+application those names are framework-internal and version-dependent, so most users never
+supply them — and the generic planner, co-locating every `@Bean` (§5.2.1), then keeps the
+heavyweight web/security/cache infrastructure on the main thread. The opt-in **Spring Boot
+Web profile**, enabled with `ParallelBootstrapSettings.springBootWebProfile(true)` or
+`@EnableParallelBootstrap(springBootWebProfile = true)` (off by default), closes that gap
+for the canonical Boot Web architecture (embedded servlet container + Spring MVC + Jackson
++ optional Spring Security / Spring Cache).
+
+The profile is a **pre-list generator**, not a new execution path. It carries an internal
+curated registry (`SpringBootWebProfile`) of well-known web auto-configuration beans,
+grouped by independence:
+
+* **web** — the Jackson `ObjectMapper` and the Spring MVC handler infrastructure
+  (`requestMappingHandlerMapping`/`...Adapter`, `localeResolver`);
+* **security** — the Spring Security filter chain (`springSecurityFilterChain` /
+  `FilterChainProxy`);
+* **cache** — the `cacheManager`.
+
+Each entry is keyed by both its **canonical bean name(s)** *and* its **type** (matched via
+`getType(name, false)`, never instantiating the bean), so it keeps resolving across Boot
+versions and custom user bean names. Because the library depends only on `spring-context`,
+every web/security/cache type is referenced by fully-qualified name and resolved
+reflectively; an entry whose type is absent from the classpath simply never matches.
+
+Resolution runs in `applySpringBootWebProfile`, immediately after the co-background groups
+(§5.2.6), and is **guarded by architecture detection**: it activates only when the context
+registers a web-server-factory / dispatcher marker type (`isWebContext`). On a non-web
+application the profile is inert. When active, each resolved member is freed exactly like
+the allowlist — its configuration→`@Bean` co-location edge is dropped — feeding the same
+proven primitive rather than a bespoke path.
+
+Crucially, the profile **only generates a pre-list**; it adds no new safety surface. Every
+freed bean still flows through `isSafeCandidate` and `propagateMainline`, so the
+structurally pinned heavyweights of a JPA web app stay on the main thread automatically and
+are therefore deliberately *absent* from the registry: the `EntityManagerFactory`
+`FactoryBean` (force-instantiated), the `DataSource` (pulled mainline by its consumers),
+the JPA-`depends-on`-pinned Liquibase/Flyway migrator, and the embedded servlet container
+(created in `onRefresh()` before singleton instantiation) cannot be backgrounded
+regardless of the pre-list. The realistic win is overlapping Security + Jackson/MVC + cache
+among themselves and with the JPA stack's main-thread work — modest but targeted. An
+incorrect entry still fails fast with `BeanCurrentlyInCreationException` rather than
+producing wrong results (design goal #1).
+
 ### 5.3 Consequences
 
 * All **declaration-level** relationships are now modelled and made safe: explicit
@@ -573,7 +620,9 @@ than producing wrong results (design goal #1).
   name specific `@Bean` beans through `backgroundBeanNames` / `FORCE_BACKGROUND_ATTRIBUTE`
   (§5.2.4) to background just those, name shared infrastructure singletons as
   `barrierBeanNames` (§5.2.5) to let their consumers overlap, or declare mutually
-  independent heavyweights as `coBackgroundGroups` (§5.2.6).
+  independent heavyweights as `coBackgroundGroups` (§5.2.6). For a Spring Boot Web
+  application, the opinionated `springBootWebProfile` (§5.2.7) frees a curated set of
+  well-known web/security/cache beans without having to name them by hand.
 * **Narrow residual blind spot.** A bean that is *not* a factory-method bean (a
   component or plain definition) could still be pulled by type through a **direct
   `getBean(...)` from inside another bean's initialization code**. This is rare and
@@ -627,17 +676,18 @@ than producing wrong results (design goal #1).
   the alias, and Spring resolves the bootstrap executor to the dedicated pool instead of Boot's
   shared task pool. A genuine, explicitly defined `bootstrapExecutor` bean is left untouched and
   still wins.
-* The bootstrap executor is, by default, a `ThreadPoolExecutor` with a **fixed,
-  bounded** size (`max(2, availableProcessors() * 2)`) and **daemon** threads named
-  with the configured prefix (default `parallel-bootstrap-`).
-* When `useVirtualThreads` is enabled (`@EnableParallelBootstrap(useVirtualThreads = true)`
-  or `ParallelBootstrapSettings.builder().useVirtualThreads(true)`), the executor is
-  instead an **unbounded virtual-thread-per-task** executor whose threads are named
-  with the same prefix; `poolSize` is ignored. This targets the frequently
+* The bootstrap executor is, by default, an **unbounded virtual-thread-per-task**
+  executor whose virtual threads are named with the configured prefix (default
+  `parallel-bootstrap-`); `poolSize` is ignored. This targets the frequently
   blocking-bound nature of bean bootstrap and relies on the Java 25 baseline, where
   blocking inside Spring's singleton-creation lock no longer pins a carrier (JDK 24,
   JEP 491). The startup speedup ceiling remains the bean dependency graph's critical
-  path; CPU-bound workloads should keep the bounded pool.
+  path.
+* When `useVirtualThreads` is disabled (`@EnableParallelBootstrap(useVirtualThreads = false)`
+  or `ParallelBootstrapSettings.builder().useVirtualThreads(false)`), the executor is
+  instead a `ThreadPoolExecutor` with a **fixed, bounded** size
+  (`max(2, availableProcessors() * 2)`) and **daemon** threads named with the same
+  prefix. CPU-bound workloads should prefer this bounded pool.
 * A `ContextRefreshedEvent` listener (registered as a manual singleton so the event
   multicaster detects it) clears the factory's bootstrap executor and shuts it
   down **immediately after refresh**, so threads do not outlive bootstrap.
