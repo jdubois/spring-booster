@@ -178,7 +178,7 @@ final class SpringBootWebProfile {
     /**
      * Resolve the curated registry against the given bean factory: for every catalog group, collect
      * the names of the registered, in-graph beans that match one of its entries (by canonical name
-     * or by assignable type). Groups that resolve to fewer than one member are dropped.
+     * or by assignable type). Groups that resolve to no members are dropped.
      * @param beanFactory the bean factory to resolve against
      * @param graphNodes the bean names present in the dependency graph (resolution is limited to
      * these so the profile never references a bean the planner is not considering)
