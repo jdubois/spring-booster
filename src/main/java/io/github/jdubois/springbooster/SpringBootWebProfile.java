@@ -109,14 +109,15 @@ final class SpringBootWebProfile {
             Set.of("WebServerFactory", "ServletWebServerFactory", "ReactiveWebServerFactory");
 
     /**
-     * The curated registry. The three groups are mutually independent at the bean-graph level
+     * The curated registry. The groups are mutually independent at the bean-graph level
      * (they share no dependency edges), so each is expressed with allowlist semantics
      * ({@code mutuallyIndependent = false}): every member is freed from co-location while its real,
      * intra-group dependencies stay ordered, and the connectivity-safe propagation keeps any member
      * a main-thread bean genuinely pulls on the main thread.
      */
     private static final List<Group> CATALOG = List.of(
-            // Web / MVC / Jackson: the JSON mapper and the MVC handler infrastructure. These are
+            // Web / MVC / Jackson: the JSON mapper and the MVC handler infrastructure (handler
+            // mapping/adapter, the formatting conversion service and the locale resolver). These are
             // independent of the persistence stack and dominated by the leaf ObjectMapper.
             new Group(
                     "web",
@@ -136,8 +137,19 @@ final class SpringBootWebProfile {
                                     List.of(
                                             "org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerAdapter")),
                             new Entry(
+                                    List.of("mvcConversionService"),
+                                    List.of("org.springframework.format.support.FormattingConversionService")),
+                            new Entry(
                                     List.of("localeResolver"),
                                     List.of("org.springframework.web.servlet.LocaleResolver")))),
+            // Validation: the Bean Validation provider (JSR-380 / Hibernate Validator). A terminal
+            // infrastructure leaf, independent of the persistence stack at the bean-graph level.
+            new Group(
+                    "validation",
+                    false,
+                    List.of(new Entry(
+                            List.of("defaultValidator", "mvcValidator"),
+                            List.of("org.springframework.validation.beanvalidation.LocalValidatorFactoryBean")))),
             // Security: the Spring Security filter chain. The canonical safe-to-background
             // heavyweight when it does not touch the database.
             new Group(

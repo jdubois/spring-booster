@@ -47,6 +47,7 @@ import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
 import org.springframework.beans.factory.support.AbstractBeanDefinition;
 import org.springframework.context.ApplicationListener;
 import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.context.aot.AbstractAotProcessor;
 import org.springframework.context.event.ContextRefreshedEvent;
 import org.springframework.core.PriorityOrdered;
 import org.springframework.util.Assert;
@@ -157,30 +158,62 @@ public class ParallelBootstrapBeanFactoryPostProcessor
             } else {
                 candidates = resolveCandidatePlan(beanFactory);
             }
-            if (candidates.isEmpty()) {
+            // The JPA EntityManagerFactory background bootstrap installs a live executor as a bean
+            // definition property, which cannot be serialized into AOT-generated code, so it is a
+            // strictly runtime concern and is skipped during AOT build processing.
+            boolean jpaEnabled = this.settings.isBackgroundEntityManagerFactory() && !isAotProcessing();
+            if (candidates.isEmpty() && !jpaEnabled) {
+                logger.debug("No eligible beans for parallel bootstrap; using sequential instantiation");
+                return;
+            }
+            ExecutorService executor = createBootstrapExecutor();
+            int jpaWired = jpaEnabled ? JpaBackgroundBootstrap.apply(beanFactory, executor) : 0;
+            if (candidates.isEmpty() && jpaWired == 0) {
+                // Nothing to background and no EntityManagerFactory to offload: do not install the
+                // bootstrap executor or its shutdown hook.
+                executor.shutdown();
                 logger.debug("No eligible beans for parallel bootstrap; using sequential instantiation");
                 return;
             }
             for (String beanName : candidates) {
                 markForBackgroundInit(beanFactory, beanName);
             }
-            ExecutorService executor = createBootstrapExecutor();
             beanFactory.setBootstrapExecutor(executor);
             claimBootstrapExecutorBeanName(beanFactory, executor);
             registerShutdownHook(beanFactory, executor);
             if (logger.isInfoEnabled()) {
-                if (this.settings.isUseVirtualThreads()) {
-                    logger.info("Parallel bootstrap enabled for " + candidates.size()
-                            + " bean(s) using a virtual thread per bean");
-                } else {
-                    logger.info("Parallel bootstrap enabled for " + candidates.size() + " bean(s) using a pool of "
-                            + this.settings.getPoolSize() + " thread(s)");
-                }
+                logBootstrapEnabled(candidates.size(), jpaWired);
             }
         } catch (RuntimeException ex) {
             // Kill-switch / graceful fallback: never let planning break the context.
             logger.warn("Parallel bootstrap planning failed; falling back to sequential instantiation", ex);
         }
+    }
+
+    /**
+     * Whether the JVM is currently running Spring AOT build-time processing
+     * ({@code spring.aot.processing}). The JPA background bootstrap is skipped in that phase
+     * because it installs a live executor that cannot be captured in generated artifacts.
+     */
+    private static boolean isAotProcessing() {
+        return Boolean.getBoolean(AbstractAotProcessor.AOT_PROCESSING);
+    }
+
+    private void logBootstrapEnabled(int candidateCount, int jpaWired) {
+        StringBuilder message = new StringBuilder("Parallel bootstrap enabled for ")
+                .append(candidateCount)
+                .append(" bean(s) using ");
+        if (this.settings.isUseVirtualThreads()) {
+            message.append("a virtual thread per bean");
+        } else {
+            message.append("a pool of ").append(this.settings.getPoolSize()).append(" thread(s)");
+        }
+        if (jpaWired > 0) {
+            message.append("; backgrounding the native build of ")
+                    .append(jpaWired)
+                    .append(" EntityManagerFactory bean(s)");
+        }
+        logger.info(message.toString());
     }
 
     /**

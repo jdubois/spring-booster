@@ -93,6 +93,20 @@
             <artifactId>assertj-core</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- Test-only: exercises the opt-in JPA EntityManagerFactory background bootstrap against a
+             real AbstractEntityManagerFactoryBean. The library core depends on spring-context only;
+             the JPA integration is resolved reflectively so spring-orm stays out of the main
+             classpath. -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-orm</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>jakarta.persistence</groupId>
+            <artifactId>jakarta.persistence-api</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

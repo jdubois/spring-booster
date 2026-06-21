@@ -104,6 +104,10 @@ class ParallelBootstrapRegistrar implements ImportBeanDefinitionRegistrar {
             if (springBootWebProfile instanceof Boolean springBootWebProfileValue) {
                 builder.springBootWebProfile(springBootWebProfileValue);
             }
+            Object backgroundEntityManagerFactory = attributes.get("backgroundEntityManagerFactory");
+            if (backgroundEntityManagerFactory instanceof Boolean backgroundEntityManagerFactoryValue) {
+                builder.backgroundEntityManagerFactory(backgroundEntityManagerFactoryValue);
+            }
             Object buildTimePlanningEnabled = attributes.get("buildTimePlanningEnabled");
             if (buildTimePlanningEnabled instanceof Boolean buildTimeValue) {
                 builder.buildTimePlanningEnabled(buildTimeValue);

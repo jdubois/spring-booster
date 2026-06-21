@@ -29,6 +29,8 @@ import org.springframework.beans.factory.config.RuntimeBeanReference;
 import org.springframework.beans.factory.support.AbstractBeanDefinition;
 import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 import org.springframework.beans.factory.support.RootBeanDefinition;
+import org.springframework.core.task.AsyncTaskExecutor;
+import org.springframework.orm.jpa.AbstractEntityManagerFactoryBean;
 
 /**
  * Planning and marking tests for {@link ParallelBootstrapBeanFactoryPostProcessor}
@@ -630,6 +632,44 @@ class ParallelBootstrapBeanFactoryPostProcessorTests {
                 "webServerFactory", new RootBeanDefinition(ServletWebServerFactory.class));
     }
 
+    // --- JPA EntityManagerFactory background bootstrap (backgroundEntityManagerFactory) ---
+
+    @Test
+    void backgroundEntityManagerFactoryWiresDeferredBootstrapWhenEnabled() {
+        this.beanFactory.registerBeanDefinition(
+                "entityManagerFactory", new RootBeanDefinition(StubEntityManagerFactoryBean.class));
+        ParallelBootstrapSettings settings = ParallelBootstrapSettings.builder()
+                .backgroundEntityManagerFactory(true)
+                .build();
+
+        new ParallelBootstrapBeanFactoryPostProcessor(settings).postProcessBeanFactory(this.beanFactory);
+
+        // The EntityManagerFactory FactoryBean stays on the main thread (it is never a background
+        // candidate), but its native build is offloaded by wiring its bootstrapExecutor property.
+        Object value = this.beanFactory
+                .getBeanDefinition("entityManagerFactory")
+                .getPropertyValues()
+                .get(JpaBackgroundBootstrap.BOOTSTRAP_EXECUTOR_PROPERTY);
+        assertThat(value).isInstanceOf(AsyncTaskExecutor.class);
+        // The bootstrap executor is installed even though no bean is backgrounded, so the deferred
+        // build has somewhere to run.
+        assertThat(this.beanFactory.getBootstrapExecutor()).isNotNull();
+    }
+
+    @Test
+    void backgroundEntityManagerFactoryIsInertWhenDisabled() {
+        this.beanFactory.registerBeanDefinition(
+                "entityManagerFactory", new RootBeanDefinition(StubEntityManagerFactoryBean.class));
+
+        new ParallelBootstrapBeanFactoryPostProcessor().postProcessBeanFactory(this.beanFactory);
+
+        Object value = this.beanFactory
+                .getBeanDefinition("entityManagerFactory")
+                .getPropertyValues()
+                .get(JpaBackgroundBootstrap.BOOTSTRAP_EXECUTOR_PROPERTY);
+        assertThat(value).isNull();
+    }
+
     private void registerFactoryBean(String beanName, String factoryBeanName, String... constructorRefs) {
         RootBeanDefinition bd = new RootBeanDefinition(Leaf.class);
         bd.setFactoryBeanName(factoryBeanName);
@@ -730,6 +770,17 @@ class ParallelBootstrapBeanFactoryPostProcessorTests {
     // A stand-in whose simple name matches a Spring Boot Web marker type, so the web profile's
     // architecture detection recognises this bare bean factory as a web application context.
     static class ServletWebServerFactory {}
+
+    // A concrete AbstractEntityManagerFactoryBean used to exercise the JPA background bootstrap
+    // wiring. It is never instantiated by the planner (the native factory is never built), so the
+    // abstract hook can simply fail fast if ever called.
+    static class StubEntityManagerFactoryBean extends AbstractEntityManagerFactoryBean {
+
+        @Override
+        protected jakarta.persistence.EntityManagerFactory createNativeEntityManagerFactory() {
+            throw new UnsupportedOperationException("not instantiated in tests");
+        }
+    }
 
     static class Leaf {}
 

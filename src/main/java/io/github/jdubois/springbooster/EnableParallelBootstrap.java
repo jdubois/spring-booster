@@ -184,6 +184,20 @@ public @interface EnableParallelBootstrap {
     boolean springBootWebProfile() default false;
 
     /**
+     * Whether the opt-in JPA {@code EntityManagerFactory} background bootstrap is enabled. Defaults
+     * to {@code false}. When {@code true}, Spring Booster gives every
+     * {@code AbstractEntityManagerFactoryBean} the library's bootstrap executor so the JPA provider
+     * builds the native {@code EntityManagerFactory} on a background thread (Spring's deferred
+     * bootstrap), overlapping the expensive Hibernate metamodel build with the rest of context
+     * refresh. The {@code EntityManagerFactory} bean itself is never backgrounded, so the
+     * connectivity-safe guarantees are untouched, an explicitly configured {@code bootstrapExecutor}
+     * is left in place, and a non-JPA context is left unchanged.
+     * @return whether the JPA {@code EntityManagerFactory} background bootstrap is enabled
+     * @see ParallelBootstrapSettings#isBackgroundEntityManagerFactory()
+     */
+    boolean backgroundEntityManagerFactory() default false;
+
+    /**
      * Whether the experimental build-time bytecode lookup-detection refinement is
      * enabled. Defaults to {@code false}. When {@code true}, {@code @Configuration}
      * classes are scanned at the bytecode level to confirm whether they actually perform
