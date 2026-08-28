@@ -47,7 +47,7 @@
              inherited from the Spring Boot dependency BOM, so this project always
              tracks exactly the stable Spring Framework release shipped by this Boot
              line. Bumping spring-boot.version is the supported way to move baseline. -->
-        <spring-boot.version>4.1.0</spring-boot.version>
+        <spring-boot.version>4.1.1</spring-boot.version>
         <maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version>
         <maven-surefire-plugin.version>3.5.6</maven-surefire-plugin.version>
         <maven-jar-plugin.version>3.5.0</maven-jar-plugin.version>
